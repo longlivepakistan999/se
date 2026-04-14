@@ -832,7 +832,7 @@ if ( 'log' === $view && file_exists( $log_file ) ) {
                 <p class="info-text" style="margin-top:12px">Generation takes 60-90 seconds. This page auto-refreshes every 5 seconds.</p>
             </div>
         </div>
-        <script>setTimeout(function(){ window.location.reload(); }, 5000);</script>
+        <script>setTimeout(function(){ window.location.href = '<?php echo $base_url; ?>&view=generate'; }, 5000);</script>
 
         <?php elseif ( $gen_task && 'completed' === $gen_task['status'] ) : ?>
         <!-- Task completed -->
