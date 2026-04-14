@@ -19,7 +19,7 @@ class QWE_Publisher {
      * @param array $article Article data from QWE_Generator.
      * @return int|false      Post ID on success, false on failure.
      */
-    public static function publish( $article, $status = null ) {
+    public static function publish( $article ) {
 
         // Ensure WordPress functions are available.
         if ( ! function_exists( 'wp_insert_post' ) ) {
@@ -49,7 +49,7 @@ class QWE_Publisher {
             'post_name'    => $slug,
             'post_content' => wp_kses_post( $article['content'] ),
             'post_excerpt' => sanitize_text_field( $article['excerpt'] ),
-            'post_status'  => $status ? $status : QWE_POST_STATUS,
+            'post_status'  => QWE_POST_STATUS,
             'post_type'    => 'tutorial',
             'post_author'  => QWE_AUTHOR_ID,
         );

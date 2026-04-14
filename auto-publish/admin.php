@@ -35,7 +35,6 @@ $view = isset( $_GET['view'] ) && in_array( $_GET['view'], $valid_views, true ) 
 
 // Handle actions.
 $message = '';
-$generated_article = null;
 if ( isset( $_GET['action'] ) ) {
     $action = $_GET['action'];
 
@@ -182,7 +181,7 @@ if ( isset( $_GET['action'] ) ) {
         }
     }
 
-    // Generate single article from keyword.
+    // Generate and publish single article from keyword.
     if ( 'generate-article' === $action && isset( $_POST['keyword'] ) ) {
         $gen_keyword    = trim( $_POST['keyword'] );
         $gen_category   = isset( $_POST['gen_category'] ) ? sanitize_slug( $_POST['gen_category'] ) : '';
@@ -198,6 +197,7 @@ if ( isset( $_GET['action'] ) ) {
             $message = 'Invalid category.';
         } else {
             require_once __DIR__ . '/generator.php';
+            require_once __DIR__ . '/publisher.php';
             @set_time_limit( 300 );
 
             $duplicate_warning = '';
@@ -205,53 +205,31 @@ if ( isset( $_GET['action'] ) ) {
                 $duplicate_warning = ' (Note: this keyword was previously used)';
             }
 
-            $generated_article = QWE_Generator::generate(
+            $article = QWE_Generator::generate(
                 $gen_keyword,
                 'manual',
                 $gen_category,
                 $gen_difficulty ?: 'beginner'
             );
 
-            if ( $generated_article ) {
-                $message = 'Article generated successfully!' . $duplicate_warning . ' Review the preview below.';
-                $view = 'generate';
+            if ( $article ) {
+                $post_id = QWE_Publisher::publish( $article );
+
+                if ( $post_id ) {
+                    QWE_DB::log_article(
+                        $post_id,
+                        $article['title'],
+                        $gen_keyword,
+                        'manual',
+                        $article['category'],
+                        $article['difficulty']
+                    );
+                    $message = "Article published successfully! Post ID: {$post_id}" . $duplicate_warning;
+                } else {
+                    $message = 'Article generated but publishing failed. Check log for details.';
+                }
             } else {
                 $message = 'Generation failed. Check the log for details.';
-            }
-        }
-    }
-
-    // Publish a previously generated (previewed) article.
-    if ( 'publish-generated' === $action && isset( $_POST['article_data'] ) ) {
-        $article_json = base64_decode( $_POST['article_data'] );
-        $article = json_decode( $article_json, true );
-        $publish_mode = isset( $_POST['publish_mode'] ) ? $_POST['publish_mode'] : 'draft';
-
-        if ( ! $article || empty( $article['title'] ) || empty( $article['content'] ) ) {
-            $message = 'Invalid article data. Please regenerate.';
-        } else {
-            require_once __DIR__ . '/publisher.php';
-
-            $valid_modes = array( 'publish', 'draft' );
-            if ( ! in_array( $publish_mode, $valid_modes, true ) ) {
-                $publish_mode = 'draft';
-            }
-
-            $post_id = QWE_Publisher::publish( $article, $publish_mode );
-
-            if ( $post_id ) {
-                QWE_DB::log_article(
-                    $post_id,
-                    $article['title'],
-                    $article['keyword'],
-                    'manual',
-                    $article['category'],
-                    $article['difficulty']
-                );
-                $status_label = ( 'publish' === $publish_mode ) ? 'published' : 'saved as draft';
-                $message = "Article {$status_label} successfully! Post ID: {$post_id}";
-            } else {
-                $message = 'Failed to publish article. Check log for details.';
             }
         }
     }
@@ -529,21 +507,7 @@ if ( 'log' === $view && file_exists( $log_file ) ) {
         .badge-used { background: #FEE2E2; color: #DC2626; }
         .badge-pending { background: #D1FAE5; color: #065F46; }
         .badge-manual { background: #E0E7FF; color: #3730A3; }
-        .article-preview { max-height: 500px; overflow-y: auto; border: 1px solid #e5e7eb; padding: 20px; border-radius: 8px; line-height: 1.8; }
-        .article-preview h2, .article-preview h3, .article-preview h4 { margin: 16px 0 8px; }
-        .article-preview p { margin-bottom: 12px; }
-        .article-preview ul, .article-preview ol { margin: 8px 0 8px 20px; }
-        .article-preview pre { background: #1e293b; color: #e2e8f0; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 13px; margin: 12px 0; }
-        .article-preview code { font-family: 'JetBrains Mono', monospace; font-size: 13px; }
-        .article-preview blockquote { border-left: 3px solid #4F46E5; padding-left: 16px; color: #64748b; margin: 12px 0; }
-        .article-preview table { border-collapse: collapse; width: 100%; margin: 12px 0; }
-        .article-preview table th, .article-preview table td { border: 1px solid #e5e7eb; padding: 8px 12px; text-align: left; }
-        .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px; }
-        .meta-item { background: #f8fafc; padding: 12px; border-radius: 6px; }
-        .meta-item .meta-label { font-size: 11px; color: #64748b; font-weight: 600; text-transform: uppercase; }
-        .meta-item .meta-value { font-size: 14px; color: #1a1a2e; margin-top: 4px; word-break: break-word; }
         .generate-note { background: #EFF6FF; border: 1px solid #BFDBFE; color: #1E40AF; padding: 10px 14px; border-radius: 8px; margin-top: 12px; font-size: 13px; }
-        .publish-actions { display: flex; gap: 10px; align-items: center; margin-top: 16px; }
         @media (max-width: 768px) { .grid { grid-template-columns: repeat(2, 1fr); } .actions { flex-direction: column; } .form-row { flex-direction: column; } .form-row label { min-width: auto; } .search-bar { margin-left: 0; width: 100%; } .search-bar input[type="text"] { flex: 1; } }
     </style>
 </head>
@@ -823,71 +787,9 @@ if ( 'log' === $view && file_exists( $log_file ) ) {
         <?php if ( 'generate' === $view ) : ?>
         <!-- ===================== GENERATE VIEW ===================== -->
 
-        <?php if ( ! empty( $generated_article ) ) : ?>
-        <!-- Article Preview -->
         <div class="section">
-            <h2>Generated Article Preview</h2>
-            <div class="meta-grid">
-                <div class="meta-item">
-                    <div class="meta-label">Title</div>
-                    <div class="meta-value"><?php echo htmlspecialchars( $generated_article['title'] ); ?></div>
-                </div>
-                <div class="meta-item">
-                    <div class="meta-label">Slug</div>
-                    <div class="meta-value"><?php echo htmlspecialchars( $generated_article['slug'] ); ?></div>
-                </div>
-                <div class="meta-item">
-                    <div class="meta-label">Category</div>
-                    <div class="meta-value"><span class="badge badge-longtail"><?php echo htmlspecialchars( isset( $categories[ $generated_article['category'] ] ) ? $categories[ $generated_article['category'] ] : $generated_article['category'] ); ?></span></div>
-                </div>
-                <div class="meta-item">
-                    <div class="meta-label">Difficulty</div>
-                    <div class="meta-value"><span class="badge badge-<?php echo safe_css_class( $generated_article['difficulty'] ); ?>"><?php echo htmlspecialchars( $generated_article['difficulty'] ); ?></span></div>
-                </div>
-                <div class="meta-item">
-                    <div class="meta-label">Excerpt</div>
-                    <div class="meta-value"><?php echo htmlspecialchars( $generated_article['excerpt'] ); ?></div>
-                </div>
-                <div class="meta-item">
-                    <div class="meta-label">Meta Description</div>
-                    <div class="meta-value"><?php echo htmlspecialchars( $generated_article['meta_description'] ); ?></div>
-                </div>
-                <div class="meta-item">
-                    <div class="meta-label">Tags</div>
-                    <div class="meta-value"><?php echo ! empty( $generated_article['tags'] ) ? htmlspecialchars( implode( ', ', $generated_article['tags'] ) ) : '-'; ?></div>
-                </div>
-                <div class="meta-item">
-                    <div class="meta-label">Word Count</div>
-                    <div class="meta-value"><?php echo str_word_count( strip_tags( $generated_article['content'] ) ); ?></div>
-                </div>
-            </div>
-        </div>
-
-        <div class="section">
-            <h2>Content Preview</h2>
-            <div class="article-preview">
-                <?php echo $generated_article['content']; ?>
-            </div>
-        </div>
-
-        <!-- Publish Actions -->
-        <div class="section">
-            <h2>Publish Options</h2>
-            <form method="POST" action="<?php echo $base_url; ?>&action=publish-generated&view=generate">
-                <input type="hidden" name="article_data" value="<?php echo base64_encode( json_encode( $generated_article ) ); ?>">
-                <div class="publish-actions">
-                    <button type="submit" name="publish_mode" value="publish" class="btn btn-primary" onclick="return confirm('Publish this article now?')">Publish Now</button>
-                    <button type="submit" name="publish_mode" value="draft" class="btn btn-success">Save as Draft</button>
-                    <a href="<?php echo $base_url; ?>&view=generate" class="btn btn-secondary">Discard & New</a>
-                </div>
-            </form>
-        </div>
-
-        <?php else : ?>
-        <!-- Generate Form -->
-        <div class="section">
-            <h2>Generate Single Article</h2>
-            <p class="info-text" style="margin-bottom:16px">Enter a keyword to generate one article using the AI pipeline. The keyword does not need to exist in the keywords database.</p>
+            <h2>Generate & Publish Article</h2>
+            <p class="info-text" style="margin-bottom:16px">Enter a keyword to generate and immediately publish an article. The keyword does not need to exist in the keywords database.</p>
             <form method="POST" action="<?php echo $base_url; ?>&action=generate-article&view=generate">
                 <div class="form-row">
                     <label>Keyword</label>
@@ -912,15 +814,13 @@ if ( 'log' === $view && file_exists( $log_file ) ) {
                 </div>
                 <div class="form-row">
                     <label></label>
-                    <button type="submit" class="btn btn-primary" onclick="return confirm('Generate article? This will take 60-90 seconds.')">Generate Article</button>
+                    <button type="submit" class="btn btn-primary" onclick="return confirm('Generate and publish article now? This will take 60-90 seconds.')">Generate & Publish</button>
                 </div>
             </form>
             <div class="generate-note">
-                Generation takes 60-90 seconds (2-pass AI pipeline with web search). The page will reload with a preview when ready.
+                Generation takes 60-90 seconds (2-pass AI pipeline with web search). The article will be published automatically when ready.
             </div>
         </div>
-
-        <?php endif; ?>
 
         <?php endif; // end generate view ?>
 
