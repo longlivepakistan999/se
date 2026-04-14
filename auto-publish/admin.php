@@ -229,10 +229,8 @@ if ( isset( $_GET['action'] ) ) {
                 );
                 file_put_contents( $task_file, json_encode( $task, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT ) );
 
-                // Launch background worker.
-                $php_bin = PHP_BINARY ?: 'php';
-                $worker  = escapeshellarg( __DIR__ . '/generate_worker.php' );
-                exec( "{$php_bin} {$worker} > /dev/null 2>&1 &" );
+                // Flag: run generation after page output (via fastcgi_finish_request).
+                $run_bg_generation = true;
 
                 $message = 'Article generation started! The page will auto-refresh to show progress.';
             }
@@ -1037,3 +1035,89 @@ if ( 'log' === $view && file_exists( $log_file ) ) {
     </div>
 </body>
 </html>
+<?php
+// ============================================================
+// Background generation: runs AFTER the page is sent to browser.
+// ============================================================
+if ( ! empty( $run_bg_generation ) ) {
+
+    // Send response to browser, then keep PHP running.
+    if ( function_exists( 'fastcgi_finish_request' ) ) {
+        fastcgi_finish_request();
+    } else {
+        ignore_user_abort( true );
+        if ( ob_get_level() ) {
+            ob_end_flush();
+        }
+        flush();
+    }
+
+    set_time_limit( 300 );
+
+    $task_file = __DIR__ . '/data/generate_task.json';
+    $task = json_decode( file_get_contents( $task_file ), true );
+
+    if ( $task && 'pending' === $task['status'] ) {
+
+        // Update status to running.
+        $task['status']     = 'running';
+        $task['started_at'] = date( 'Y-m-d H:i:s' );
+        file_put_contents( $task_file, json_encode( $task, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT ) );
+
+        $log_line = "[" . date( 'Y-m-d H:i:s' ) . "] GENERATE: Starting for keyword: {$task['keyword']}\n";
+        file_put_contents( __DIR__ . '/data/auto_publish.log', $log_line, FILE_APPEND );
+
+        require_once __DIR__ . '/generator.php';
+        require_once __DIR__ . '/publisher.php';
+
+        // Generate article.
+        $article = QWE_Generator::generate(
+            $task['keyword'],
+            'manual',
+            $task['category'],
+            $task['difficulty'] ?: 'beginner'
+        );
+
+        if ( $article ) {
+            $post_id = QWE_Publisher::publish( $article );
+
+            if ( $post_id ) {
+                QWE_DB::log_article(
+                    $post_id,
+                    $article['title'],
+                    $task['keyword'],
+                    'manual',
+                    $article['category'],
+                    $article['difficulty']
+                );
+                $task['status']       = 'completed';
+                $task['completed_at'] = date( 'Y-m-d H:i:s' );
+                $task['result']       = array(
+                    'post_id' => $post_id,
+                    'title'   => $article['title'],
+                    'message' => "Article published successfully! Post ID: {$post_id}",
+                );
+
+                $log_line = "[" . date( 'Y-m-d H:i:s' ) . "] GENERATE: Published [{$post_id}]: {$article['title']}\n";
+                file_put_contents( __DIR__ . '/data/auto_publish.log', $log_line, FILE_APPEND );
+            } else {
+                $task['status']       = 'failed';
+                $task['completed_at'] = date( 'Y-m-d H:i:s' );
+                $task['result']       = array( 'message' => 'Article generated but publishing failed. Check log for details.' );
+
+                $log_line = "[" . date( 'Y-m-d H:i:s' ) . "] GENERATE: Publishing failed for: {$task['keyword']}\n";
+                file_put_contents( __DIR__ . '/data/auto_publish.log', $log_line, FILE_APPEND );
+            }
+        } else {
+            $task['status']       = 'failed';
+            $task['completed_at'] = date( 'Y-m-d H:i:s' );
+            $task['result']       = array( 'message' => 'Generation failed. Check the log for details.' );
+
+            $log_line = "[" . date( 'Y-m-d H:i:s' ) . "] GENERATE: Generation failed for: {$task['keyword']}\n";
+            file_put_contents( __DIR__ . '/data/auto_publish.log', $log_line, FILE_APPEND );
+        }
+
+        file_put_contents( $task_file, json_encode( $task, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT ) );
+    }
+}
+?>
