@@ -1116,6 +1116,10 @@ PROMPT;
             // Check if the API paused mid-turn (long-running web search).
             $stop_reason = $data['stop_reason'] ?? 'end_turn';
 
+            if ( 'max_tokens' === $stop_reason ) {
+                self::log( 'WARNING: Response truncated (max_tokens reached). JSON may be incomplete.' );
+            }
+
             if ( 'pause_turn' === $stop_reason && $round < $max_continuations ) {
                 self::log( 'API returned pause_turn — continuing (round ' . ( $round + 1 ) . ')' );
 
@@ -1161,37 +1165,140 @@ PROMPT;
      * @return array|false     Parsed article data or false.
      */
     private static function parse_response( $response ) {
-        // Clean potential markdown code fences.
         $response = trim( $response );
-        $response = preg_replace( '/^```json\s*/i', '', $response );
-        $response = preg_replace( '/\s*```$/', '', $response );
 
-        $article = json_decode( $response, true );
+        // Method 1: Try direct parse (clean response with optional fences).
+        $clean = preg_replace( '/^```json\s*/i', '', $response );
+        $clean = preg_replace( '/\s*```$/', '', $clean );
+        $clean = trim( $clean );
 
-        // Fallback: if the full text isn't valid JSON (e.g., web search added
-        // thinking text around it), extract the JSON object by finding the
-        // outermost { ... } braces.
-        if ( json_last_error() !== JSON_ERROR_NONE ) {
-            $json_start = strpos( $response, '{' );
-            $json_end   = strrpos( $response, '}' );
+        $article = json_decode( $clean, true );
+        if ( json_last_error() === JSON_ERROR_NONE ) {
+            return self::validate_article_fields( $article );
+        }
 
-            if ( $json_start !== false && $json_end !== false && $json_end > $json_start ) {
-                $json_str = substr( $response, $json_start, $json_end - $json_start + 1 );
-                $article  = json_decode( $json_str, true );
+        // Method 2: Extract ```json ... ``` block from anywhere in the response.
+        // This handles the case where Claude outputs thinking text before the JSON.
+        if ( preg_match( '/```json\s*([\s\S]*?)\s*```/', $response, $matches ) ) {
+            $article = json_decode( trim( $matches[1] ), true );
+            if ( json_last_error() === JSON_ERROR_NONE ) {
+                self::log( 'JSON extracted from markdown code fence' );
+                return self::validate_article_fields( $article );
+            }
+        }
 
+        // Method 3: Find complete JSON object using brace-counting.
+        // More reliable than strpos/strrpos when content has nested braces.
+        $json_str = self::extract_json_object( $response );
+        if ( $json_str ) {
+            $article = json_decode( $json_str, true );
+            if ( json_last_error() === JSON_ERROR_NONE ) {
+                self::log( 'JSON extracted from mixed text (brace matching)' );
+                return self::validate_article_fields( $article );
+            }
+        }
+
+        // Method 4: Find JSON starting with {"title" pattern, then brace-match.
+        if ( preg_match( '/(\{\s*"title"\s*:)/s', $response, $matches, PREG_OFFSET_CAPTURE ) ) {
+            $offset = $matches[1][1];
+            $candidate = substr( $response, $offset );
+            $json_str = self::extract_json_object( $candidate );
+            if ( $json_str ) {
+                $article = json_decode( $json_str, true );
                 if ( json_last_error() === JSON_ERROR_NONE ) {
-                    self::log( 'JSON extracted from mixed text (web search thinking text stripped)' );
+                    self::log( 'JSON extracted via title-key pattern matching' );
+                    return self::validate_article_fields( $article );
                 }
             }
         }
 
-        if ( json_last_error() !== JSON_ERROR_NONE ) {
-            self::log( 'JSON parse error: ' . json_last_error_msg() );
-            self::log( 'Raw response (first 500 chars): ' . substr( $response, 0, 500 ) );
+        // Method 5: Last resort — simple first/last brace (original fallback).
+        $json_start = strpos( $response, '{' );
+        $json_end   = strrpos( $response, '}' );
+        if ( $json_start !== false && $json_end !== false && $json_end > $json_start ) {
+            $json_str = substr( $response, $json_start, $json_end - $json_start + 1 );
+            $article  = json_decode( $json_str, true );
+            if ( json_last_error() === JSON_ERROR_NONE ) {
+                self::log( 'JSON extracted from mixed text (first/last brace fallback)' );
+                return self::validate_article_fields( $article );
+            }
+        }
+
+        // All methods failed.
+        self::log( 'JSON parse error: ' . json_last_error_msg() );
+        self::log( 'Raw response (first 500 chars): ' . substr( $response, 0, 500 ) );
+        self::log( 'Raw response (last 300 chars): ' . substr( $response, -300 ) );
+        return false;
+    }
+
+    /**
+     * Extract a complete JSON object using brace-counting.
+     *
+     * Walks through the string character by character, respecting JSON string
+     * escaping, and returns the substring from the first '{' to its matching '}'.
+     *
+     * @param string $text Text containing a JSON object.
+     * @return string|null  The JSON string, or null if not found / unmatched.
+     */
+    private static function extract_json_object( $text ) {
+        $start = strpos( $text, '{' );
+        if ( false === $start ) {
+            return null;
+        }
+
+        $len       = strlen( $text );
+        $depth     = 0;
+        $in_string = false;
+        $escape    = false;
+
+        for ( $i = $start; $i < $len; $i++ ) {
+            $char = $text[ $i ];
+
+            if ( $escape ) {
+                $escape = false;
+                continue;
+            }
+
+            if ( '\\' === $char && $in_string ) {
+                $escape = true;
+                continue;
+            }
+
+            if ( '"' === $char ) {
+                $in_string = ! $in_string;
+                continue;
+            }
+
+            if ( $in_string ) {
+                continue;
+            }
+
+            if ( '{' === $char ) {
+                $depth++;
+            } elseif ( '}' === $char ) {
+                $depth--;
+                if ( 0 === $depth ) {
+                    return substr( $text, $start, $i - $start + 1 );
+                }
+            }
+        }
+
+        // Unmatched braces — likely truncated response.
+        self::log( 'JSON brace matching failed: unmatched braces (response may be truncated)' );
+        return null;
+    }
+
+    /**
+     * Validate required article fields after JSON parsing.
+     *
+     * @param array|null $article Parsed article data.
+     * @return array|false        Validated article or false.
+     */
+    private static function validate_article_fields( $article ) {
+        if ( ! is_array( $article ) ) {
             return false;
         }
 
-        // Validate required fields.
         $required = array( 'title', 'slug', 'excerpt', 'category', 'difficulty', 'content' );
         foreach ( $required as $field ) {
             if ( empty( $article[ $field ] ) ) {
