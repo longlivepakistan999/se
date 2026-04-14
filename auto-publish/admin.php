@@ -181,56 +181,69 @@ if ( isset( $_GET['action'] ) ) {
         }
     }
 
-    // Generate and publish single article from keyword.
+    // Generate and publish single article from keyword (background).
     if ( 'generate-article' === $action && isset( $_POST['keyword'] ) ) {
-        $gen_keyword    = trim( $_POST['keyword'] );
-        $gen_category   = isset( $_POST['gen_category'] ) ? sanitize_slug( $_POST['gen_category'] ) : '';
-        $gen_difficulty  = isset( $_POST['gen_difficulty'] ) ? sanitize_slug( $_POST['gen_difficulty'] ) : 'beginner';
-        $valid_diffs     = array( 'beginner', 'intermediate', 'advanced' );
-        $valid_cats      = array_keys( $categories );
+        $task_file = __DIR__ . '/data/generate_task.json';
+        $can_generate = true;
 
-        if ( strlen( $gen_keyword ) < 3 ) {
-            $message = 'Keyword must be at least 3 characters.';
-        } elseif ( $gen_difficulty && ! in_array( $gen_difficulty, $valid_diffs, true ) ) {
-            $message = 'Invalid difficulty level.';
-        } elseif ( $gen_category && ! in_array( $gen_category, $valid_cats, true ) ) {
-            $message = 'Invalid category.';
-        } else {
-            require_once __DIR__ . '/generator.php';
-            require_once __DIR__ . '/publisher.php';
-            @set_time_limit( 300 );
-
-            $duplicate_warning = '';
-            if ( QWE_DB::keyword_already_used( $gen_keyword ) ) {
-                $duplicate_warning = ' (Note: this keyword was previously used)';
-            }
-
-            $article = QWE_Generator::generate(
-                $gen_keyword,
-                'manual',
-                $gen_category,
-                $gen_difficulty ?: 'beginner'
-            );
-
-            if ( $article ) {
-                $post_id = QWE_Publisher::publish( $article );
-
-                if ( $post_id ) {
-                    QWE_DB::log_article(
-                        $post_id,
-                        $article['title'],
-                        $gen_keyword,
-                        'manual',
-                        $article['category'],
-                        $article['difficulty']
-                    );
-                    $message = "Article published successfully! Post ID: {$post_id}" . $duplicate_warning;
+        // Check if a task is already running.
+        if ( file_exists( $task_file ) ) {
+            $existing = json_decode( file_get_contents( $task_file ), true );
+            if ( $existing && in_array( $existing['status'], array( 'pending', 'running' ), true ) ) {
+                // Check for stale tasks (running > 5 minutes).
+                $start_time = strtotime( $existing['started_at'] ?: $existing['created_at'] );
+                if ( time() - $start_time > 300 ) {
+                    // Task timed out, allow new one.
+                    unlink( $task_file );
                 } else {
-                    $message = 'Article generated but publishing failed. Check log for details.';
+                    $message = 'A generation task is already running. Please wait for it to finish.';
+                    $can_generate = false;
                 }
-            } else {
-                $message = 'Generation failed. Check the log for details.';
             }
+        }
+
+        if ( $can_generate ) {
+            $gen_keyword    = trim( $_POST['keyword'] );
+            $gen_category   = isset( $_POST['gen_category'] ) ? sanitize_slug( $_POST['gen_category'] ) : '';
+            $gen_difficulty  = isset( $_POST['gen_difficulty'] ) ? sanitize_slug( $_POST['gen_difficulty'] ) : 'beginner';
+            $valid_diffs     = array( 'beginner', 'intermediate', 'advanced' );
+            $valid_cats      = array_keys( $categories );
+
+            if ( strlen( $gen_keyword ) < 3 ) {
+                $message = 'Keyword must be at least 3 characters.';
+            } elseif ( $gen_difficulty && ! in_array( $gen_difficulty, $valid_diffs, true ) ) {
+                $message = 'Invalid difficulty level.';
+            } elseif ( $gen_category && ! in_array( $gen_category, $valid_cats, true ) ) {
+                $message = 'Invalid category.';
+            } else {
+                // Create task file.
+                $task = array(
+                    'keyword'      => $gen_keyword,
+                    'category'     => $gen_category,
+                    'difficulty'   => $gen_difficulty,
+                    'status'       => 'pending',
+                    'created_at'   => date( 'Y-m-d H:i:s' ),
+                    'started_at'   => null,
+                    'completed_at' => null,
+                    'result'       => null,
+                );
+                file_put_contents( $task_file, json_encode( $task, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT ) );
+
+                // Launch background worker.
+                $php_bin = PHP_BINARY ?: 'php';
+                $worker  = escapeshellarg( __DIR__ . '/generate_worker.php' );
+                exec( "{$php_bin} {$worker} > /dev/null 2>&1 &" );
+
+                $message = 'Article generation started! The page will auto-refresh to show progress.';
+            }
+        }
+    }
+
+    // Clear completed/failed task.
+    if ( 'clear-task' === $action ) {
+        $task_file = __DIR__ . '/data/generate_task.json';
+        if ( file_exists( $task_file ) ) {
+            unlink( $task_file );
         }
     }
 }
@@ -508,6 +521,11 @@ if ( 'log' === $view && file_exists( $log_file ) ) {
         .badge-pending { background: #D1FAE5; color: #065F46; }
         .badge-manual { background: #E0E7FF; color: #3730A3; }
         .generate-note { background: #EFF6FF; border: 1px solid #BFDBFE; color: #1E40AF; padding: 10px 14px; border-radius: 8px; margin-top: 12px; font-size: 13px; }
+        .generate-progress { text-align: center; padding: 40px 20px; }
+        .spinner { width: 40px; height: 40px; border: 4px solid #e5e7eb; border-top-color: #4F46E5; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 20px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .message-success { background: #d4edda; border: 1px solid #c3e6cb; color: #155724; padding: 14px 18px; border-radius: 8px; font-size: 14px; line-height: 1.6; }
+        .message-error { background: #f8d7da; border: 1px solid #f5c6cb; color: #721c24; padding: 14px 18px; border-radius: 8px; font-size: 14px; }
         @media (max-width: 768px) { .grid { grid-template-columns: repeat(2, 1fr); } .actions { flex-direction: column; } .form-row { flex-direction: column; } .form-row label { min-width: auto; } .search-bar { margin-left: 0; width: 100%; } .search-bar input[type="text"] { flex: 1; } }
     </style>
 </head>
@@ -787,6 +805,68 @@ if ( 'log' === $view && file_exists( $log_file ) ) {
         <?php if ( 'generate' === $view ) : ?>
         <!-- ===================== GENERATE VIEW ===================== -->
 
+        <?php
+        $task_file = __DIR__ . '/data/generate_task.json';
+        $gen_task = null;
+        if ( file_exists( $task_file ) ) {
+            $gen_task = json_decode( file_get_contents( $task_file ), true );
+            // Auto-expire stale tasks (running > 5 minutes).
+            if ( $gen_task && in_array( $gen_task['status'], array( 'pending', 'running' ), true ) ) {
+                $start_time = strtotime( $gen_task['started_at'] ?: $gen_task['created_at'] );
+                if ( time() - $start_time > 300 ) {
+                    $gen_task['status'] = 'failed';
+                    $gen_task['completed_at'] = date( 'Y-m-d H:i:s' );
+                    $gen_task['result'] = array( 'message' => 'Generation timed out (exceeded 5 minutes). Please try again.' );
+                    file_put_contents( $task_file, json_encode( $gen_task, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT ) );
+                }
+            }
+        }
+        ?>
+
+        <?php if ( $gen_task && in_array( $gen_task['status'], array( 'pending', 'running' ), true ) ) : ?>
+        <!-- Task is running -->
+        <div class="section">
+            <h2>Generating Article...</h2>
+            <div class="generate-progress">
+                <div class="spinner"></div>
+                <p style="font-size:16px;font-weight:600;">Keyword: <?php echo htmlspecialchars( $gen_task['keyword'] ); ?></p>
+                <p class="info-text">Started: <?php echo htmlspecialchars( $gen_task['started_at'] ?: $gen_task['created_at'] ); ?></p>
+                <p class="info-text" style="margin-top:12px">Generation takes 60-90 seconds. This page auto-refreshes every 5 seconds.</p>
+            </div>
+        </div>
+        <script>setTimeout(function(){ window.location.reload(); }, 5000);</script>
+
+        <?php elseif ( $gen_task && 'completed' === $gen_task['status'] ) : ?>
+        <!-- Task completed -->
+        <div class="section">
+            <h2>Generation Complete</h2>
+            <div class="message-success">
+                <?php echo htmlspecialchars( $gen_task['result']['message'] ); ?>
+                <?php if ( ! empty( $gen_task['result']['title'] ) ) : ?>
+                <br>Title: <?php echo htmlspecialchars( $gen_task['result']['title'] ); ?>
+                <?php endif; ?>
+            </div>
+            <div style="margin-top:16px">
+                <a href="<?php echo $base_url; ?>&view=generate&action=clear-task" class="btn btn-primary">Generate Another</a>
+                <a href="<?php echo $base_url; ?>" class="btn btn-secondary">Back to Dashboard</a>
+            </div>
+        </div>
+
+        <?php elseif ( $gen_task && 'failed' === $gen_task['status'] ) : ?>
+        <!-- Task failed -->
+        <div class="section">
+            <h2>Generation Failed</h2>
+            <div class="message-error">
+                <?php echo htmlspecialchars( $gen_task['result']['message'] ); ?>
+            </div>
+            <div style="margin-top:16px">
+                <a href="<?php echo $base_url; ?>&view=generate&action=clear-task" class="btn btn-primary">Try Again</a>
+                <a href="<?php echo $base_url; ?>&view=log" class="btn btn-secondary">View Log</a>
+            </div>
+        </div>
+
+        <?php else : ?>
+        <!-- No task - show form -->
         <div class="section">
             <h2>Generate & Publish Article</h2>
             <p class="info-text" style="margin-bottom:16px">Enter a keyword to generate and immediately publish an article. The keyword does not need to exist in the keywords database.</p>
@@ -814,13 +894,15 @@ if ( 'log' === $view && file_exists( $log_file ) ) {
                 </div>
                 <div class="form-row">
                     <label></label>
-                    <button type="submit" class="btn btn-primary" onclick="return confirm('Generate and publish article now? This will take 60-90 seconds.')">Generate & Publish</button>
+                    <button type="submit" class="btn btn-primary" onclick="return confirm('Generate and publish article now?')">Generate & Publish</button>
                 </div>
             </form>
             <div class="generate-note">
                 Generation takes 60-90 seconds (2-pass AI pipeline with web search). The article will be published automatically when ready.
             </div>
         </div>
+
+        <?php endif; ?>
 
         <?php endif; // end generate view ?>
 
