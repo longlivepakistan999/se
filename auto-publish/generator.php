@@ -26,6 +26,12 @@ class QWE_Generator {
      * @return array|false          Article data or false on failure.
      */
     public static function generate( $keyword, $keyword_type = 'longtail', $hint_category = '', $difficulty = 'beginner', $provider = null ) {
+        // Resolve provider early so prompts can be tailored.
+        if ( null === $provider ) {
+            $ps = QWE_DB::get_provider_settings();
+            $provider = $ps['provider'];
+        }
+
         $categories = unserialize( QWE_CATEGORIES );
 
         $category_list = '';
@@ -33,7 +39,7 @@ class QWE_Generator {
             $category_list .= "- {$slug}: {$name}\n";
         }
 
-        $system_prompt = self::build_system_prompt();
+        $system_prompt = self::build_system_prompt( $provider );
         $user_prompt = self::build_user_prompt( $keyword, $keyword_type, $hint_category, $difficulty, $category_list );
 
         // Pass 1: Generate article with web search enabled (if configured).
@@ -142,23 +148,14 @@ class QWE_Generator {
      * 3. Label every data point with its source
      * 4. Include 3-5 unique insights readers can't easily find elsewhere
      */
-    private static function build_system_prompt() {
-        $prompt = <<<'PROMPT'
-You are a tech writer for QWE AI Academy (qwe.edu.pl). Your articles teach readers how to use AI tools effectively.
+    private static function build_system_prompt( $provider = 'claude' ) {
+        // Build web search step conditionally based on provider.
+        $web_search_step = '';
+        $freshness_rule  = '';
 
-=== GOOGLE CONTENT QUALITY PRINCIPLES (NON-NEGOTIABLE) ===
-
-These 3 rules override everything else. Every article must satisfy all 3:
-
-1. ORIGINALITY — Do NOT repeat the standard tutorial structure other sites use. If the common tutorial structure for this topic is "What is X → Why use X → How to use X → Comparison → FAQ", you MUST use a different organization. At least one section must cover an angle that other tutorials on this topic would NOT cover. Use your own examples (not recycled from docs). Offer your own analysis and opinions, not just restated facts. Add observations that come from actual usage, not from reading other guides.
-
-2. FRESHNESS — Facts from web search are time-sensitive. Every fact you collect must be treated as potentially dated. If a fact does NOT have a clear date attached, you must mark it in the article with "as of [date]" or "this may have changed since". Do NOT present any unverified information as current fact. Always search for the LATEST version/pricing/features before writing.
-
-3. INFORMATION RHYTHM — At least 2 paragraphs in the article must NOT directly solve a problem. They can be: an analogy, a brief comment reflecting on what was just explained, or an open-ended question that you leave without a definitive answer. These paragraphs give the article breathing room and make it feel human. All OTHER paragraphs must maintain high information density — every sentence teaches or moves the reader forward.
-
-=== FACTS-FIRST METHODOLOGY ===
-
-Before writing ANYTHING, you must first research the competition and collect facts. This is your #1 rule:
+        if ( 'openai' !== $provider ) {
+            // Claude: has web_search tool.
+            $web_search_step = <<<'WS'
 
 STEP 0 — WEB SEARCH (if you have the web_search tool):
 You have access to a web search tool. USE IT before writing to get the latest, most accurate facts:
@@ -171,6 +168,40 @@ You have access to a web search tool. USE IT before writing to get the latest, m
 - Search for official announcements: "[tool] blog announcement", "[tool] changelog 2025" — official blog posts and changelogs are high-authority sources
 Search first, collect facts from results, THEN write. Cite what you find.
 
+WS;
+            $freshness_rule = '2. FRESHNESS — Facts from web search are time-sensitive. Every fact you collect must be treated as potentially dated. If a fact does NOT have a clear date attached, you must mark it in the article with "as of [date]" or "this may have changed since". Do NOT present any unverified information as current fact. Always search for the LATEST version/pricing/features before writing.';
+        } else {
+            // OpenAI: no web_search tool. Use training knowledge only.
+            $web_search_step = <<<'WS'
+
+STEP 0 — KNOWLEDGE RESEARCH:
+You do NOT have web search access. Use your training knowledge to collect the most accurate and up-to-date facts you know. Be honest about uncertainty:
+- For pricing, versions, and dates: qualify with "as of [your knowledge cutoff]" or "verify current pricing on the official site"
+- Do NOT fabricate URLs, search results, or claim to have searched the web
+- If you are unsure about a specific fact, say so rather than guessing
+- Focus on established, well-known facts you are confident about
+
+WS;
+            $freshness_rule = '2. FRESHNESS — You do NOT have web search. Use your training knowledge but be honest about its limits. For any time-sensitive facts (pricing, versions, features), add qualifiers like "as of [date]" or "check the official site for current info". Do NOT present uncertain information as current fact.';
+        }
+
+        $prompt = <<<PROMPT
+You are a tech writer for QWE AI Academy (qwe.edu.pl). Your articles teach readers how to use AI tools effectively.
+
+=== GOOGLE CONTENT QUALITY PRINCIPLES (NON-NEGOTIABLE) ===
+
+These 3 rules override everything else. Every article must satisfy all 3:
+
+1. ORIGINALITY — Do NOT repeat the standard tutorial structure other sites use. If the common tutorial structure for this topic is "What is X → Why use X → How to use X → Comparison → FAQ", you MUST use a different organization. At least one section must cover an angle that other tutorials on this topic would NOT cover. Use your own examples (not recycled from docs). Offer your own analysis and opinions, not just restated facts. Add observations that come from actual usage, not from reading other guides.
+
+{$freshness_rule}
+
+3. INFORMATION RHYTHM — At least 2 paragraphs in the article must NOT directly solve a problem. They can be: an analogy, a brief comment reflecting on what was just explained, or an open-ended question that you leave without a definitive answer. These paragraphs give the article breathing room and make it feel human. All OTHER paragraphs must maintain high information density — every sentence teaches or moves the reader forward.
+
+=== FACTS-FIRST METHODOLOGY ===
+
+Before writing ANYTHING, you must first research the competition and collect facts. This is your #1 rule:
+{$web_search_step}
 STEP 0.5 — SERP ANALYSIS (CRITICAL — this is the real differentiator):
 Search for the keyword itself (e.g., "how to use [tool]", "[tool] tutorial"). Read the top results. Extract the COMPETITOR CONSENSUS — what every article already covers:
 - What structure do they all use? (e.g., "What is X → Why → How → Compare → FAQ")
@@ -395,7 +426,23 @@ GOOD: Section 1 uses P+code+P, Section 2 is short-P-only, Section 3 uses P+table
 Write the entire article in LANGUAGE_PLACEHOLDER. All headings, paragraphs, FAQ, pro tips, and excerpt must be in LANGUAGE_PLACEHOLDER. Only code snippets, tool names, and technical terms may remain in English.
 PROMPT;
 
-        return str_replace( 'LANGUAGE_PLACEHOLDER', QWE_CONTENT_LANGUAGE, $prompt );
+        $prompt = str_replace( 'LANGUAGE_PLACEHOLDER', QWE_CONTENT_LANGUAGE, $prompt );
+
+        // For OpenAI: adjust remaining web-search references in shared prompt sections.
+        if ( 'openai' === $provider ) {
+            $prompt = str_replace(
+                'Combine web search results with your existing knowledge. List every verifiable fact:',
+                'Use your existing knowledge to list every verifiable fact:',
+                $prompt
+            );
+            $prompt = str_replace(
+                'Search for the keyword itself (e.g., "how to use [tool]", "[tool] tutorial"). Read the top results. Extract the COMPETITOR CONSENSUS',
+                'Think about what the top search results for this keyword would typically cover. Infer the COMPETITOR CONSENSUS',
+                $prompt
+            );
+        }
+
+        return $prompt;
     }
 
     /**
@@ -858,24 +905,43 @@ PROMPT;
             return false;
         }
 
-        // Parse the review response.
+        // Parse the review response using the same robust methods as Pass 1.
         $response = trim( $response );
-        $response = preg_replace( '/^```json\s*/i', '', $response );
-        $response = preg_replace( '/\s*```$/', '', $response );
 
-        $result = json_decode( $response, true );
+        // Method 1: Direct parse (strip markdown fences at edges).
+        $clean = preg_replace( '/^```json\s*/i', '', $response );
+        $clean = preg_replace( '/\s*```$/', '', $clean );
+        $result = json_decode( trim( $clean ), true );
 
-        // Fallback: extract JSON object from surrounding text if direct parse fails.
+        // Method 2: Extract ```json ... ``` block from anywhere.
+        if ( json_last_error() !== JSON_ERROR_NONE ) {
+            if ( preg_match( '/```json\s*([\s\S]*?)\s*```/', $response, $matches ) ) {
+                $result = json_decode( trim( $matches[1] ), true );
+                if ( json_last_error() === JSON_ERROR_NONE ) {
+                    self::log( 'Pass 2: JSON extracted from markdown code fence' );
+                }
+            }
+        }
+
+        // Method 3: Brace-counting extraction.
+        if ( json_last_error() !== JSON_ERROR_NONE ) {
+            $json_str = self::extract_json_object( $response );
+            if ( $json_str ) {
+                $result = json_decode( $json_str, true );
+                if ( json_last_error() === JSON_ERROR_NONE ) {
+                    self::log( 'Pass 2: JSON extracted via brace matching' );
+                }
+            }
+        }
+
+        // Method 4: Simple first/last brace fallback.
         if ( json_last_error() !== JSON_ERROR_NONE ) {
             $json_start = strpos( $response, '{' );
             $json_end   = strrpos( $response, '}' );
-
             if ( $json_start !== false && $json_end !== false && $json_end > $json_start ) {
-                $json_str = substr( $response, $json_start, $json_end - $json_start + 1 );
-                $result   = json_decode( $json_str, true );
-
+                $result = json_decode( substr( $response, $json_start, $json_end - $json_start + 1 ), true );
                 if ( json_last_error() === JSON_ERROR_NONE ) {
-                    self::log( 'Pass 2: JSON extracted from mixed text' );
+                    self::log( 'Pass 2: JSON extracted from first/last brace' );
                 }
             }
         }
@@ -883,6 +949,7 @@ PROMPT;
         if ( json_last_error() !== JSON_ERROR_NONE ) {
             self::log( 'Pass 2 JSON parse error: ' . json_last_error_msg() );
             self::log( 'Pass 2 raw (first 500): ' . substr( $response, 0, 500 ) );
+            self::log( 'Pass 2 raw (last 300): ' . substr( $response, -300 ) );
             return false;
         }
 
