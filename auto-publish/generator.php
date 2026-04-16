@@ -25,7 +25,7 @@ class QWE_Generator {
      * @param string $difficulty    'beginner', 'intermediate', or 'advanced'.
      * @return array|false          Article data or false on failure.
      */
-    public static function generate( $keyword, $keyword_type = 'longtail', $hint_category = '', $difficulty = 'beginner' ) {
+    public static function generate( $keyword, $keyword_type = 'longtail', $hint_category = '', $difficulty = 'beginner', $provider = null ) {
         $categories = unserialize( QWE_CATEGORIES );
 
         $category_list = '';
@@ -37,7 +37,7 @@ class QWE_Generator {
         $user_prompt = self::build_user_prompt( $keyword, $keyword_type, $hint_category, $difficulty, $category_list );
 
         // Pass 1: Generate article with web search enabled (if configured).
-        $response = self::call_claude_api( $system_prompt, $user_prompt, true );
+        $response = self::call_api( $system_prompt, $user_prompt, true, $provider );
 
         if ( ! $response ) {
             self::log( "API call failed for keyword: {$keyword}" );
@@ -87,7 +87,7 @@ class QWE_Generator {
         self::log( "Pass 1 draft generated for: {$keyword}" );
 
         // Pass 2: E-E-A-T evaluation — if all scores >= 80, use original; otherwise revise.
-        $final = self::review_and_revise( $article );
+        $final = self::review_and_revise( $article, $provider );
         if ( $final ) {
             $article = $final;
         } else {
@@ -845,13 +845,13 @@ PROMPT;
      * @param array $draft_article Article data from Pass 1.
      * @return array|false Article data (original or revised) or false on failure.
      */
-    private static function review_and_revise( $draft_article ) {
+    private static function review_and_revise( $draft_article, $provider = null ) {
         $system_prompt = self::build_review_system_prompt();
         $user_prompt = self::build_review_user_prompt( $draft_article );
 
         self::log( 'Pass 2: Sending draft for E-E-A-T evaluation' );
 
-        $response = self::call_claude_api( $system_prompt, $user_prompt );
+        $response = self::call_api( $system_prompt, $user_prompt, false, $provider );
 
         if ( ! $response ) {
             self::log( 'Pass 2 API call failed — using Pass 1 draft as-is' );
@@ -1151,6 +1151,105 @@ PROMPT;
         }
 
         return $full_text;
+    }
+
+    /**
+     * Call OpenAI API (ChatGPT).
+     *
+     * @param string $system_prompt System instructions.
+     * @param string $user_prompt   User message.
+     * @return string|false         Response text or false.
+     */
+    private static function call_openai_api( $system_prompt, $user_prompt ) {
+        $api_key = QWE_OPENAI_API_KEY;
+        $model   = QWE_OPENAI_MODEL;
+
+        if ( empty( $api_key ) ) {
+            self::log( 'OpenAI API key not configured' );
+            return false;
+        }
+
+        $payload = json_encode( array(
+            'model'      => $model,
+            'max_tokens' => 8192,
+            'messages'   => array(
+                array( 'role' => 'system', 'content' => $system_prompt ),
+                array( 'role' => 'user',   'content' => $user_prompt ),
+            ),
+        ), JSON_UNESCAPED_UNICODE );
+
+        $ch = curl_init( 'https://api.openai.com/v1/chat/completions' );
+        curl_setopt_array( $ch, array(
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => $payload,
+            CURLOPT_HTTPHEADER     => array(
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . $api_key,
+            ),
+            CURLOPT_TIMEOUT        => 180,
+        ) );
+
+        $response  = curl_exec( $ch );
+        $http_code = curl_getinfo( $ch, CURLINFO_HTTP_CODE );
+        $error     = curl_error( $ch );
+        curl_close( $ch );
+
+        if ( $error ) {
+            self::log( "OpenAI cURL error: {$error}" );
+            return false;
+        }
+
+        if ( 200 !== $http_code ) {
+            self::log( "OpenAI API HTTP {$http_code}: " . substr( $response, 0, 500 ) );
+            return false;
+        }
+
+        $data = json_decode( $response, true );
+
+        if ( ! isset( $data['choices'][0]['message']['content'] ) ) {
+            self::log( 'Unexpected OpenAI response structure' );
+            return false;
+        }
+
+        $text = $data['choices'][0]['message']['content'];
+
+        if ( empty( $text ) ) {
+            self::log( 'No text content in OpenAI response' );
+            return false;
+        }
+
+        // Check for truncation.
+        $finish_reason = $data['choices'][0]['finish_reason'] ?? 'stop';
+        if ( 'length' === $finish_reason ) {
+            self::log( 'WARNING: OpenAI response truncated (max_tokens reached)' );
+        }
+
+        return $text;
+    }
+
+    /**
+     * Route API call to the configured provider.
+     *
+     * @param string $system_prompt  System instructions.
+     * @param string $user_prompt    User message.
+     * @param bool   $use_web_search Enable web search (Claude only).
+     * @param string $provider       'claude' or 'openai'. Null = use config default.
+     * @return string|false          Response text or false.
+     */
+    private static function call_api( $system_prompt, $user_prompt, $use_web_search = false, $provider = null ) {
+        if ( null === $provider ) {
+            $provider = defined( 'QWE_AI_PROVIDER' ) ? QWE_AI_PROVIDER : 'claude';
+        }
+
+        self::log( "Using AI provider: {$provider}" );
+
+        if ( 'openai' === $provider ) {
+            // OpenAI does not support web_search tool.
+            return self::call_openai_api( $system_prompt, $user_prompt );
+        }
+
+        return self::call_claude_api( $system_prompt, $user_prompt, $use_web_search );
     }
 
     /**

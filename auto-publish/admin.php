@@ -206,6 +206,7 @@ if ( isset( $_GET['action'] ) ) {
             $gen_keyword    = trim( $_POST['keyword'] );
             $gen_category   = isset( $_POST['gen_category'] ) ? sanitize_slug( $_POST['gen_category'] ) : '';
             $gen_difficulty  = isset( $_POST['gen_difficulty'] ) ? sanitize_slug( $_POST['gen_difficulty'] ) : 'beginner';
+            $gen_provider    = isset( $_POST['gen_provider'] ) && 'openai' === $_POST['gen_provider'] ? 'openai' : 'claude';
             $valid_diffs     = array( 'beginner', 'intermediate', 'advanced' );
             $valid_cats      = array_keys( $categories );
 
@@ -221,6 +222,7 @@ if ( isset( $_GET['action'] ) ) {
                     'keyword'      => $gen_keyword,
                     'category'     => $gen_category,
                     'difficulty'   => $gen_difficulty,
+                    'provider'     => $gen_provider,
                     'status'       => 'pending',
                     'created_at'   => date( 'Y-m-d H:i:s' ),
                     'started_at'   => null,
@@ -828,7 +830,7 @@ if ( 'log' === $view && file_exists( $log_file ) ) {
             <div class="generate-progress">
                 <div class="spinner"></div>
                 <p style="font-size:16px;font-weight:600;">Keyword: <?php echo htmlspecialchars( $gen_task['keyword'] ); ?></p>
-                <p class="info-text">Started: <?php echo htmlspecialchars( $gen_task['started_at'] ?: $gen_task['created_at'] ); ?></p>
+                <p class="info-text">Provider: <?php echo htmlspecialchars( ! empty( $gen_task['provider'] ) ? strtoupper( $gen_task['provider'] ) : 'CLAUDE' ); ?> | Started: <?php echo htmlspecialchars( $gen_task['started_at'] ?: $gen_task['created_at'] ); ?></p>
                 <p class="info-text" style="margin-top:12px">Generation takes 60-90 seconds. This page auto-refreshes every 5 seconds.</p>
             </div>
         </div>
@@ -888,6 +890,13 @@ if ( 'log' === $view && file_exists( $log_file ) ) {
                         <option value="beginner">Beginner</option>
                         <option value="intermediate">Intermediate</option>
                         <option value="advanced">Advanced</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label>AI Provider</label>
+                    <select name="gen_provider">
+                        <option value="claude" <?php echo ( 'claude' === QWE_AI_PROVIDER ) ? 'selected' : ''; ?>>Claude (<?php echo QWE_CLAUDE_MODEL; ?>)</option>
+                        <option value="openai" <?php echo ( 'openai' === QWE_AI_PROVIDER ) ? 'selected' : ''; ?>>ChatGPT (<?php echo QWE_OPENAI_MODEL; ?>)</option>
                     </select>
                 </div>
                 <div class="form-row">
@@ -1071,11 +1080,13 @@ if ( ! empty( $run_bg_generation ) ) {
         require_once __DIR__ . '/publisher.php';
 
         // Generate article.
+        $task_provider = ! empty( $task['provider'] ) ? $task['provider'] : null;
         $article = QWE_Generator::generate(
             $task['keyword'],
             'manual',
             $task['category'],
-            $task['difficulty'] ?: 'beginner'
+            $task['difficulty'] ?: 'beginner',
+            $task_provider
         );
 
         if ( $article ) {
