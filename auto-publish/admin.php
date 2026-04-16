@@ -186,20 +186,28 @@ if ( isset( $_GET['action'] ) ) {
         $task_file = __DIR__ . '/data/generate_task.json';
         $can_generate = true;
 
-        // Check if a task is already running.
-        if ( file_exists( $task_file ) ) {
-            $existing = json_decode( file_get_contents( $task_file ), true );
-            if ( $existing && in_array( $existing['status'], array( 'pending', 'running' ), true ) ) {
-                // Check for stale tasks (running > 5 minutes).
-                $start_time = strtotime( $existing['started_at'] ?: $existing['created_at'] );
-                if ( time() - $start_time > 300 ) {
-                    // Task timed out, allow new one.
-                    unlink( $task_file );
-                } else {
-                    $message = 'A generation task is already running. Please wait for it to finish.';
-                    $can_generate = false;
+        // Check if a task is already running (with file lock to prevent races).
+        $lock_file = $task_file . '.lock';
+        $lock_fp   = fopen( $lock_file, 'c' );
+        if ( $lock_fp && flock( $lock_fp, LOCK_EX | LOCK_NB ) ) {
+            if ( file_exists( $task_file ) ) {
+                $existing = json_decode( file_get_contents( $task_file ), true );
+                if ( $existing && in_array( $existing['status'], array( 'pending', 'running' ), true ) ) {
+                    $start_time = strtotime( $existing['started_at'] ?: $existing['created_at'] );
+                    if ( time() - $start_time > 300 ) {
+                        unlink( $task_file );
+                    } else {
+                        $message = 'A generation task is already running. Please wait for it to finish.';
+                        $can_generate = false;
+                    }
                 }
             }
+            flock( $lock_fp, LOCK_UN );
+            fclose( $lock_fp );
+        } else {
+            $message = 'A generation task is already running. Please wait for it to finish.';
+            $can_generate = false;
+            if ( $lock_fp ) fclose( $lock_fp );
         }
 
         if ( $can_generate ) {
@@ -249,7 +257,13 @@ if ( isset( $_GET['action'] ) ) {
     if ( 'save-settings' === $action && isset( $_POST['provider'] ) ) {
         $new_provider   = ( 'openai' === $_POST['provider'] ) ? 'openai' : 'claude';
         $new_api_key    = isset( $_POST['openai_api_key'] ) ? trim( $_POST['openai_api_key'] ) : '';
-        $new_model      = isset( $_POST['openai_model'] ) ? trim( $_POST['openai_model'] ) : 'gpt-4o';
+        $new_model      = isset( $_POST['openai_model'] ) ? trim( $_POST['openai_model'] ) : 'gpt-5';
+
+        // Keep existing key if field left blank.
+        if ( empty( $new_api_key ) ) {
+            $existing_ps = QWE_DB::get_provider_settings();
+            $new_api_key = $existing_ps['openai_api_key'];
+        }
 
         if ( 'openai' === $new_provider && empty( $new_api_key ) ) {
             $message = 'Please enter your OpenAI API Key before switching to ChatGPT.';
@@ -941,7 +955,7 @@ if ( 'log' === $view && file_exists( $log_file ) ) {
                 <div id="openai-fields" style="<?php echo 'openai' === $ps['provider'] ? '' : 'display:none;'; ?>">
                     <div class="form-row">
                         <label>API Key</label>
-                        <input type="password" name="openai_api_key" value="<?php echo htmlspecialchars( $ps['openai_api_key'] ); ?>" placeholder="sk-..." style="flex:1; min-width:300px;">
+                        <input type="text" name="openai_api_key" value="" placeholder="<?php echo $ps['openai_api_key'] ? 'Key set (****' . htmlspecialchars( substr( $ps['openai_api_key'], -4 ) ) . ') — leave blank to keep' : 'sk-...'; ?>" style="flex:1; min-width:300px;">
                     </div>
                     <div class="form-row">
                         <label>Model</label>
