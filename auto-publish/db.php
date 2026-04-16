@@ -355,7 +355,7 @@ class QWE_DB {
         $defaults = array(
             'provider'       => defined( 'QWE_AI_PROVIDER' ) ? QWE_AI_PROVIDER : 'claude',
             'openai_api_key' => defined( 'QWE_OPENAI_API_KEY' ) ? QWE_OPENAI_API_KEY : '',
-            'openai_model'   => defined( 'QWE_OPENAI_MODEL' ) ? QWE_OPENAI_MODEL : 'gpt-4o',
+            'openai_model'   => defined( 'QWE_OPENAI_MODEL' ) ? QWE_OPENAI_MODEL : 'gpt-5',
         );
 
         $file = self::settings_file();

@@ -149,12 +149,13 @@ class QWE_Generator {
      * 4. Include 3-5 unique insights readers can't easily find elsewhere
      */
     private static function build_system_prompt( $provider = 'claude' ) {
-        // Build web search step conditionally based on provider.
+        // Build web search step based on whether web search is globally enabled.
+        $web_search_enabled = defined( 'QWE_WEB_SEARCH_ENABLED' ) && QWE_WEB_SEARCH_ENABLED;
         $web_search_step = '';
         $freshness_rule  = '';
 
-        if ( 'openai' !== $provider ) {
-            // Claude: has web_search tool.
+        if ( $web_search_enabled ) {
+            // Both Claude and OpenAI support web search when enabled.
             $web_search_step = <<<'WS'
 
 STEP 0 — WEB SEARCH (if you have the web_search tool):
@@ -171,7 +172,7 @@ Search first, collect facts from results, THEN write. Cite what you find.
 WS;
             $freshness_rule = '2. FRESHNESS — Facts from web search are time-sensitive. Every fact you collect must be treated as potentially dated. If a fact does NOT have a clear date attached, you must mark it in the article with "as of [date]" or "this may have changed since". Do NOT present any unverified information as current fact. Always search for the LATEST version/pricing/features before writing.';
         } else {
-            // OpenAI: no web_search tool. Use training knowledge only.
+            // Web search disabled. Use training knowledge only.
             $web_search_step = <<<'WS'
 
 STEP 0 — KNOWLEDGE RESEARCH:
@@ -428,8 +429,8 @@ PROMPT;
 
         $prompt = str_replace( 'LANGUAGE_PLACEHOLDER', QWE_CONTENT_LANGUAGE, $prompt );
 
-        // For OpenAI: adjust remaining web-search references in shared prompt sections.
-        if ( 'openai' === $provider ) {
+        // When web search is disabled: adjust remaining web-search references.
+        if ( ! $web_search_enabled ) {
             $prompt = str_replace(
                 'Combine web search results with your existing knowledge. List every verifiable fact:',
                 'Use your existing knowledge to list every verifiable fact:',
@@ -1227,16 +1228,31 @@ PROMPT;
      * @param string $user_prompt   User message.
      * @return string|false         Response text or false.
      */
-    private static function call_openai_api( $system_prompt, $user_prompt ) {
+    private static function call_openai_api( $system_prompt, $user_prompt, $use_web_search = false ) {
         $ps      = QWE_DB::get_provider_settings();
         $api_key = $ps['openai_api_key'];
-        $model   = $ps['openai_model'] ?: 'gpt-4o';
+        $model   = $ps['openai_model'] ?: 'gpt-5';
 
         if ( empty( $api_key ) ) {
             self::log( 'OpenAI API key not configured' );
             return false;
         }
 
+        $web_search_active = $use_web_search
+            && defined( 'QWE_WEB_SEARCH_ENABLED' ) && QWE_WEB_SEARCH_ENABLED;
+
+        // Use Responses API when web search is needed, Chat Completions otherwise.
+        if ( $web_search_active ) {
+            return self::call_openai_responses_api( $api_key, $model, $system_prompt, $user_prompt );
+        }
+
+        return self::call_openai_chat_api( $api_key, $model, $system_prompt, $user_prompt );
+    }
+
+    /**
+     * Call OpenAI Chat Completions API (no web search).
+     */
+    private static function call_openai_chat_api( $api_key, $model, $system_prompt, $user_prompt ) {
         $payload = json_encode( array(
             'model'      => $model,
             'max_tokens' => 8192,
@@ -1276,7 +1292,7 @@ PROMPT;
         $data = json_decode( $response, true );
 
         if ( ! isset( $data['choices'][0]['message']['content'] ) ) {
-            self::log( 'Unexpected OpenAI response structure' );
+            self::log( 'Unexpected OpenAI Chat response structure' );
             return false;
         }
 
@@ -1287,13 +1303,99 @@ PROMPT;
             return false;
         }
 
-        // Check for truncation.
         $finish_reason = $data['choices'][0]['finish_reason'] ?? 'stop';
         if ( 'length' === $finish_reason ) {
             self::log( 'WARNING: OpenAI response truncated (max_tokens reached)' );
         }
 
         return $text;
+    }
+
+    /**
+     * Call OpenAI Responses API (with web search).
+     *
+     * Uses the /v1/responses endpoint with web_search_preview tool.
+     */
+    private static function call_openai_responses_api( $api_key, $model, $system_prompt, $user_prompt ) {
+        self::log( 'OpenAI web search enabled (Responses API)' );
+
+        $payload_data = array(
+            'model'        => $model,
+            'instructions' => $system_prompt,
+            'input'        => $user_prompt,
+            'tools'        => array(
+                array( 'type' => 'web_search_preview' ),
+            ),
+        );
+
+        $payload = json_encode( $payload_data, JSON_UNESCAPED_UNICODE );
+
+        $ch = curl_init( 'https://api.openai.com/v1/responses' );
+        curl_setopt_array( $ch, array(
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => $payload,
+            CURLOPT_HTTPHEADER     => array(
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . $api_key,
+            ),
+            CURLOPT_TIMEOUT        => 240,
+        ) );
+
+        $response  = curl_exec( $ch );
+        $http_code = curl_getinfo( $ch, CURLINFO_HTTP_CODE );
+        $error     = curl_error( $ch );
+        curl_close( $ch );
+
+        if ( $error ) {
+            self::log( "OpenAI Responses cURL error: {$error}" );
+            return false;
+        }
+
+        if ( 200 !== $http_code ) {
+            self::log( "OpenAI Responses API HTTP {$http_code}: " . substr( $response, 0, 500 ) );
+            return false;
+        }
+
+        $data = json_decode( $response, true );
+
+        if ( ! isset( $data['output'] ) || ! is_array( $data['output'] ) ) {
+            self::log( 'Unexpected OpenAI Responses API structure' );
+            return false;
+        }
+
+        // Extract text from output blocks and log web searches.
+        $all_text = '';
+        $search_count = 0;
+
+        foreach ( $data['output'] as $block ) {
+            $type = $block['type'] ?? '';
+
+            if ( 'web_search_call' === $type ) {
+                $search_count++;
+                $query = $block['query'] ?? '?';
+                self::log( "OpenAI web search #{$search_count}: \"{$query}\"" );
+            }
+
+            if ( 'message' === $type && isset( $block['content'] ) ) {
+                foreach ( $block['content'] as $part ) {
+                    if ( 'output_text' === ( $part['type'] ?? '' ) ) {
+                        $all_text .= $part['text'];
+                    }
+                }
+            }
+        }
+
+        if ( $search_count > 0 ) {
+            self::log( "OpenAI total web searches: {$search_count}" );
+        }
+
+        if ( empty( $all_text ) ) {
+            self::log( 'No text content in OpenAI Responses API output' );
+            return false;
+        }
+
+        return $all_text;
     }
 
     /**
@@ -1314,8 +1416,7 @@ PROMPT;
         self::log( "Using AI provider: {$provider}" );
 
         if ( 'openai' === $provider ) {
-            // OpenAI does not support web_search tool.
-            return self::call_openai_api( $system_prompt, $user_prompt );
+            return self::call_openai_api( $system_prompt, $user_prompt, $use_web_search );
         }
 
         return self::call_claude_api( $system_prompt, $user_prompt, $use_web_search );

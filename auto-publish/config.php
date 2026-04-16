@@ -28,7 +28,7 @@ define( 'QWE_CLAUDE_MODEL', 'claude-sonnet-4-5-20250929' );
 
 // OpenAI API
 define( 'QWE_OPENAI_API_KEY', '' );  // sk-...
-define( 'QWE_OPENAI_MODEL', 'gpt-4o' );
+define( 'QWE_OPENAI_MODEL', 'gpt-5' );
 
 // ============================================================
 // Web Search Settings (Claude searches the web during generation)
