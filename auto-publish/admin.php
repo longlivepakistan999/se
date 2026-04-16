@@ -628,9 +628,22 @@ if ( 'log' === $view && file_exists( $log_file ) ) {
         <!-- Config -->
         <div class="section">
             <h2>Configuration</h2>
+            <?php $dash_ps = QWE_DB::get_provider_settings(); ?>
             <table class="config-table">
-                <tr><td>AI Provider</td><td><?php echo QWE_AI_PROVIDER; ?></td></tr>
-                <tr><td>API Key</td><td><?php echo QWE_CLAUDE_API_KEY ? '****' . htmlspecialchars( substr( QWE_CLAUDE_API_KEY, -6 ) ) : '<span style="color:red">NOT SET</span>'; ?></td></tr>
+                <tr><td>AI Provider</td><td>
+                    <?php if ( 'openai' === $dash_ps['provider'] ) : ?>
+                        <span class="badge" style="background:#10B981;color:white;">ChatGPT</span> <?php echo htmlspecialchars( $dash_ps['openai_model'] ); ?>
+                    <?php else : ?>
+                        <span class="badge" style="background:#4F46E5;color:white;">Claude</span> <?php echo htmlspecialchars( QWE_CLAUDE_MODEL ); ?>
+                    <?php endif; ?>
+                </td></tr>
+                <tr><td>API Key</td><td><?php
+                    if ( 'openai' === $dash_ps['provider'] ) {
+                        echo $dash_ps['openai_api_key'] ? '****' . htmlspecialchars( substr( $dash_ps['openai_api_key'], -4 ) ) : '<span style="color:red">NOT SET</span>';
+                    } else {
+                        echo QWE_CLAUDE_API_KEY ? '****' . htmlspecialchars( substr( QWE_CLAUDE_API_KEY, -6 ) ) : '<span style="color:red">NOT SET</span>';
+                    }
+                ?></td></tr>
                 <tr><td>Articles Per Run</td><td><?php echo QWE_ARTICLES_PER_RUN; ?></td></tr>
                 <tr><td>Post Status</td><td><?php echo QWE_POST_STATUS; ?></td></tr>
                 <tr><td>Trending</td><td><span class="badge <?php echo QWE_TRENDING_ENABLED ? 'badge-enabled' : 'badge-disabled'; ?>"><?php echo QWE_TRENDING_ENABLED ? 'ENABLED' : 'DISABLED'; ?></span></td></tr>

@@ -1403,7 +1403,7 @@ PROMPT;
      *
      * @param string $system_prompt  System instructions.
      * @param string $user_prompt    User message.
-     * @param bool   $use_web_search Enable web search (Claude only).
+     * @param bool   $use_web_search Enable web search (Claude and OpenAI).
      * @param string $provider       'claude' or 'openai'. Null = use config default.
      * @return string|false          Response text or false.
      */
