@@ -30,7 +30,7 @@ $base_url = '?key=' . urlencode( $_GET['key'] );
 $categories = unserialize( QWE_CATEGORIES );
 
 // Determine current view/tab early (needed for redirect context).
-$valid_views = array( 'dashboard', 'keywords', 'trending', 'generate', 'log', 'search' );
+$valid_views = array( 'dashboard', 'keywords', 'trending', 'generate', 'settings', 'log', 'search' );
 $view = isset( $_GET['view'] ) && in_array( $_GET['view'], $valid_views, true ) ? $_GET['view'] : 'dashboard';
 
 // Handle actions.
@@ -206,7 +206,6 @@ if ( isset( $_GET['action'] ) ) {
             $gen_keyword    = trim( $_POST['keyword'] );
             $gen_category   = isset( $_POST['gen_category'] ) ? sanitize_slug( $_POST['gen_category'] ) : '';
             $gen_difficulty  = isset( $_POST['gen_difficulty'] ) ? sanitize_slug( $_POST['gen_difficulty'] ) : 'beginner';
-            $gen_provider    = isset( $_POST['gen_provider'] ) && 'openai' === $_POST['gen_provider'] ? 'openai' : 'claude';
             $valid_diffs     = array( 'beginner', 'intermediate', 'advanced' );
             $valid_cats      = array_keys( $categories );
 
@@ -222,7 +221,6 @@ if ( isset( $_GET['action'] ) ) {
                     'keyword'      => $gen_keyword,
                     'category'     => $gen_category,
                     'difficulty'   => $gen_difficulty,
-                    'provider'     => $gen_provider,
                     'status'       => 'pending',
                     'created_at'   => date( 'Y-m-d H:i:s' ),
                     'started_at'   => null,
@@ -244,6 +242,21 @@ if ( isset( $_GET['action'] ) ) {
         $task_file = __DIR__ . '/data/generate_task.json';
         if ( file_exists( $task_file ) ) {
             unlink( $task_file );
+        }
+    }
+
+    // Save provider settings.
+    if ( 'save-settings' === $action && isset( $_POST['provider'] ) ) {
+        $new_provider   = ( 'openai' === $_POST['provider'] ) ? 'openai' : 'claude';
+        $new_api_key    = isset( $_POST['openai_api_key'] ) ? trim( $_POST['openai_api_key'] ) : '';
+        $new_model      = isset( $_POST['openai_model'] ) ? trim( $_POST['openai_model'] ) : 'gpt-4o';
+
+        if ( 'openai' === $new_provider && empty( $new_api_key ) ) {
+            $message = 'Please enter your OpenAI API Key before switching to ChatGPT.';
+        } else {
+            QWE_DB::save_provider_settings( $new_provider, $new_api_key, $new_model );
+            $provider_label = ( 'openai' === $new_provider ) ? 'ChatGPT' : 'Claude';
+            $message = "AI provider switched to {$provider_label} successfully.";
         }
     }
 }
@@ -546,6 +559,7 @@ if ( 'log' === $view && file_exists( $log_file ) ) {
             <a href="<?php echo $base_url; ?>&view=keywords" class="tab <?php echo 'keywords' === $view ? 'active' : ''; ?>">Keywords (<?php echo $stats['pending_keywords']; ?>)</a>
             <a href="<?php echo $base_url; ?>&view=trending" class="tab <?php echo 'trending' === $view ? 'active' : ''; ?>">Trending</a>
             <a href="<?php echo $base_url; ?>&view=generate" class="tab <?php echo 'generate' === $view ? 'active' : ''; ?>">Generate</a>
+            <a href="<?php echo $base_url; ?>&view=settings" class="tab <?php echo 'settings' === $view ? 'active' : ''; ?>">Settings</a>
             <a href="<?php echo $base_url; ?>&view=log" class="tab <?php echo 'log' === $view ? 'active' : ''; ?>">Log</a>
             <form class="search-bar" method="GET">
                 <input type="hidden" name="key" value="<?php echo $secret; ?>">
@@ -830,7 +844,8 @@ if ( 'log' === $view && file_exists( $log_file ) ) {
             <div class="generate-progress">
                 <div class="spinner"></div>
                 <p style="font-size:16px;font-weight:600;">Keyword: <?php echo htmlspecialchars( $gen_task['keyword'] ); ?></p>
-                <p class="info-text">Provider: <?php echo htmlspecialchars( ! empty( $gen_task['provider'] ) ? strtoupper( $gen_task['provider'] ) : 'CLAUDE' ); ?> | Started: <?php echo htmlspecialchars( $gen_task['started_at'] ?: $gen_task['created_at'] ); ?></p>
+                <?php $cur_ps = QWE_DB::get_provider_settings(); ?>
+                <p class="info-text">Provider: <?php echo ( 'openai' === $cur_ps['provider'] ) ? 'ChatGPT' : 'Claude'; ?> | Started: <?php echo htmlspecialchars( $gen_task['started_at'] ?: $gen_task['created_at'] ); ?></p>
                 <p class="info-text" style="margin-top:12px">Generation takes 60-90 seconds. This page auto-refreshes every 5 seconds.</p>
             </div>
         </div>
@@ -893,13 +908,6 @@ if ( 'log' === $view && file_exists( $log_file ) ) {
                     </select>
                 </div>
                 <div class="form-row">
-                    <label>AI Provider</label>
-                    <select name="gen_provider">
-                        <option value="claude" <?php echo ( 'claude' === QWE_AI_PROVIDER ) ? 'selected' : ''; ?>>Claude (<?php echo QWE_CLAUDE_MODEL; ?>)</option>
-                        <option value="openai" <?php echo ( 'openai' === QWE_AI_PROVIDER ) ? 'selected' : ''; ?>>ChatGPT (<?php echo QWE_OPENAI_MODEL; ?>)</option>
-                    </select>
-                </div>
-                <div class="form-row">
                     <label></label>
                     <button type="submit" class="btn btn-primary" onclick="return confirm('Generate and publish article now?')">Generate & Publish</button>
                 </div>
@@ -912,6 +920,78 @@ if ( 'log' === $view && file_exists( $log_file ) ) {
         <?php endif; ?>
 
         <?php endif; // end generate view ?>
+
+
+        <?php if ( 'settings' === $view ) : ?>
+        <!-- ===================== SETTINGS VIEW ===================== -->
+
+        <?php $ps = QWE_DB::get_provider_settings(); ?>
+
+        <div class="section">
+            <h2>AI Provider Settings</h2>
+            <p class="info-text" style="margin-bottom:16px">Switch between Claude and ChatGPT. This affects all article generation (automatic cron and manual keyword).</p>
+            <form method="POST" action="<?php echo $base_url; ?>&action=save-settings&view=settings">
+                <div class="form-row">
+                    <label>AI Provider</label>
+                    <select name="provider" id="provider-select" onchange="toggleOpenAI()">
+                        <option value="claude" <?php echo 'claude' === $ps['provider'] ? 'selected' : ''; ?>>Claude</option>
+                        <option value="openai" <?php echo 'openai' === $ps['provider'] ? 'selected' : ''; ?>>ChatGPT (OpenAI)</option>
+                    </select>
+                </div>
+                <div id="openai-fields" style="<?php echo 'openai' === $ps['provider'] ? '' : 'display:none;'; ?>">
+                    <div class="form-row">
+                        <label>API Key</label>
+                        <input type="password" name="openai_api_key" value="<?php echo htmlspecialchars( $ps['openai_api_key'] ); ?>" placeholder="sk-..." style="flex:1; min-width:300px;">
+                    </div>
+                    <div class="form-row">
+                        <label>Model</label>
+                        <input type="text" name="openai_model" value="<?php echo htmlspecialchars( $ps['openai_model'] ); ?>" placeholder="gpt-4o" style="width:250px;">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <label></label>
+                    <button type="submit" class="btn btn-primary">Save Settings</button>
+                </div>
+            </form>
+            <script>
+            function toggleOpenAI() {
+                var sel = document.getElementById('provider-select');
+                var fields = document.getElementById('openai-fields');
+                fields.style.display = (sel.value === 'openai') ? '' : 'none';
+            }
+            </script>
+        </div>
+
+        <!-- Current Status -->
+        <div class="section">
+            <h2>Current Configuration</h2>
+            <table class="config-table">
+                <tr>
+                    <td>Active Provider</td>
+                    <td>
+                        <?php if ( 'openai' === $ps['provider'] ) : ?>
+                            <span class="badge" style="background:#10B981;color:white;">ChatGPT</span> <?php echo htmlspecialchars( $ps['openai_model'] ); ?>
+                        <?php else : ?>
+                            <span class="badge" style="background:#4F46E5;color:white;">Claude</span> <?php echo htmlspecialchars( QWE_CLAUDE_MODEL ); ?>
+                        <?php endif; ?>
+                    </td>
+                </tr>
+                <tr>
+                    <td>Claude API Key</td>
+                    <td><?php echo QWE_CLAUDE_API_KEY ? '****' . htmlspecialchars( substr( QWE_CLAUDE_API_KEY, -6 ) ) : '<span style="color:red">NOT SET (config.php)</span>'; ?></td>
+                </tr>
+                <tr>
+                    <td>OpenAI API Key</td>
+                    <td><?php echo $ps['openai_api_key'] ? '****' . htmlspecialchars( substr( $ps['openai_api_key'], -6 ) ) : '<span style="color:#64748b">Not configured</span>'; ?></td>
+                </tr>
+                <tr>
+                    <td>Web Search</td>
+                    <td><?php echo ( 'openai' === $ps['provider'] ) ? '<span class="info-text">Not available (ChatGPT)</span>' : ( QWE_WEB_SEARCH_ENABLED ? '<span class="badge badge-enabled">ENABLED</span>' : '<span class="badge badge-disabled">DISABLED</span>' ); ?></td>
+                </tr>
+            </table>
+        </div>
+
+        <?php endif; // end settings view ?>
 
 
         <?php if ( 'log' === $view ) : ?>
@@ -1079,14 +1159,12 @@ if ( ! empty( $run_bg_generation ) ) {
         require_once __DIR__ . '/generator.php';
         require_once __DIR__ . '/publisher.php';
 
-        // Generate article.
-        $task_provider = ! empty( $task['provider'] ) ? $task['provider'] : null;
+        // Generate article (uses global provider from Settings).
         $article = QWE_Generator::generate(
             $task['keyword'],
             'manual',
             $task['category'],
-            $task['difficulty'] ?: 'beginner',
-            $task_provider
+            $task['difficulty'] ?: 'beginner'
         );
 
         if ( $article ) {

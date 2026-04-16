@@ -333,4 +333,52 @@ class QWE_DB {
         $stmt->execute( array( $keyword ) );
         return (bool) $stmt->fetch();
     }
+
+    // ==========================================================
+    // Provider Settings (JSON file storage)
+    // ==========================================================
+
+    /**
+     * Get the provider settings file path.
+     */
+    private static function settings_file() {
+        return dirname( QWE_DB_PATH ) . '/provider_settings.json';
+    }
+
+    /**
+     * Get current provider settings.
+     *
+     * Returns array with keys: provider, openai_api_key, openai_model.
+     * Falls back to config.php constants if no settings file exists.
+     */
+    public static function get_provider_settings() {
+        $defaults = array(
+            'provider'       => defined( 'QWE_AI_PROVIDER' ) ? QWE_AI_PROVIDER : 'claude',
+            'openai_api_key' => defined( 'QWE_OPENAI_API_KEY' ) ? QWE_OPENAI_API_KEY : '',
+            'openai_model'   => defined( 'QWE_OPENAI_MODEL' ) ? QWE_OPENAI_MODEL : 'gpt-4o',
+        );
+
+        $file = self::settings_file();
+        if ( file_exists( $file ) ) {
+            $data = json_decode( file_get_contents( $file ), true );
+            if ( is_array( $data ) ) {
+                return array_merge( $defaults, $data );
+            }
+        }
+
+        return $defaults;
+    }
+
+    /**
+     * Save provider settings.
+     */
+    public static function save_provider_settings( $provider, $openai_api_key, $openai_model ) {
+        $data = array(
+            'provider'       => $provider,
+            'openai_api_key' => $openai_api_key,
+            'openai_model'   => $openai_model,
+        );
+        $file = self::settings_file();
+        return file_put_contents( $file, json_encode( $data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT ) );
+    }
 }

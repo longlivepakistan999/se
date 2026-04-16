@@ -1161,8 +1161,9 @@ PROMPT;
      * @return string|false         Response text or false.
      */
     private static function call_openai_api( $system_prompt, $user_prompt ) {
-        $api_key = QWE_OPENAI_API_KEY;
-        $model   = QWE_OPENAI_MODEL;
+        $ps      = QWE_DB::get_provider_settings();
+        $api_key = $ps['openai_api_key'];
+        $model   = $ps['openai_model'] ?: 'gpt-4o';
 
         if ( empty( $api_key ) ) {
             self::log( 'OpenAI API key not configured' );
@@ -1239,7 +1240,8 @@ PROMPT;
      */
     private static function call_api( $system_prompt, $user_prompt, $use_web_search = false, $provider = null ) {
         if ( null === $provider ) {
-            $provider = defined( 'QWE_AI_PROVIDER' ) ? QWE_AI_PROVIDER : 'claude';
+            $ps = QWE_DB::get_provider_settings();
+            $provider = $ps['provider'];
         }
 
         self::log( "Using AI provider: {$provider}" );
