@@ -126,10 +126,38 @@ define( 'QWE_CATEGORIES', serialize( array(
 define( 'QWE_CONTENT_LANGUAGE', 'English' );
 
 // ============================================================
-// AI Tools post type config.
-// The ai-tools post type is already registered in the theme.
-// These constants tell the publisher which slugs to use.
+// AI Tools post type and taxonomy.
+// Auto-registers if not already registered by the theme.
 // ============================================================
 
 define( 'QWE_TOOL_POST_TYPE', 'ai-tools' );
 define( 'QWE_TOOL_TAXONOMY', 'ai_tool_category' );
+
+add_action( 'init', function() {
+    if ( ! post_type_exists( QWE_TOOL_POST_TYPE ) ) {
+        register_post_type( QWE_TOOL_POST_TYPE, array(
+            'labels' => array(
+                'name'          => 'AI Tools',
+                'singular_name' => 'AI Tool',
+            ),
+            'public'       => true,
+            'has_archive'  => true,
+            'rewrite'      => array( 'slug' => 'ai-tools' ),
+            'supports'     => array( 'title', 'editor', 'excerpt', 'author', 'thumbnail' ),
+            'show_in_rest' => true,
+        ) );
+    }
+
+    if ( ! taxonomy_exists( QWE_TOOL_TAXONOMY ) ) {
+        register_taxonomy( QWE_TOOL_TAXONOMY, QWE_TOOL_POST_TYPE, array(
+            'labels' => array(
+                'name'          => 'AI Tool Categories',
+                'singular_name' => 'AI Tool Category',
+            ),
+            'public'       => true,
+            'hierarchical' => true,
+            'rewrite'      => array( 'slug' => 'ai-tool-category' ),
+            'show_in_rest' => true,
+        ) );
+    }
+} );
