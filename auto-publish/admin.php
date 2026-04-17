@@ -30,7 +30,7 @@ $base_url = '?key=' . urlencode( $_GET['key'] );
 $categories = unserialize( QWE_CATEGORIES );
 
 // Determine current view/tab early (needed for redirect context).
-$valid_views = array( 'dashboard', 'keywords', 'trending', 'generate', 'settings', 'log', 'search' );
+$valid_views = array( 'dashboard', 'keywords', 'tools', 'trending', 'generate', 'settings', 'log', 'search' );
 $view = isset( $_GET['view'] ) && in_array( $_GET['view'], $valid_views, true ) ? $_GET['view'] : 'dashboard';
 
 // Handle actions.
@@ -119,7 +119,34 @@ if ( isset( $_GET['action'] ) ) {
             if ( $i < $trending_count - 1 ) sleep( 3 );
         }
 
-        $message = "Run complete: {$published}/{$total_articles} articles published. Trending fetched: {$trending_added} topics.";
+        // Tool tutorials (if enabled in settings).
+        $tool_ps_run = QWE_DB::get_provider_settings();
+        $tool_count_run = ! empty( $tool_ps_run['tools_enabled'] ) ? max( 0, (int) ( $tool_ps_run['tools_per_run'] ?? 0 ) ) : 0;
+        $tool_published = 0;
+        for ( $i = 0; $i < $tool_count_run; $i++ ) {
+            $tk = QWE_DB::get_next_tool_keyword();
+            if ( ! $tk ) break;
+            if ( QWE_DB::keyword_already_used( $tk['keyword'] ) ) {
+                QWE_DB::mark_tool_keyword_used( $tk['id'], 0 );
+                continue;
+            }
+            $article = QWE_Generator::generate(
+                $tk['keyword'], 'tool', $tk['category'], $tk['difficulty'], null, $tk['tool_name'] ?? ''
+            );
+            if ( $article ) {
+                $post_id = QWE_Publisher::publish( $article );
+                if ( $post_id ) {
+                    QWE_DB::mark_tool_keyword_used( $tk['id'], $post_id );
+                    QWE_DB::log_article( $post_id, $article['title'], $tk['keyword'], 'tool', $article['category'], $article['difficulty'], $tk['id'] );
+                    $published++;
+                    $tool_published++;
+                }
+            }
+            if ( $i < $tool_count_run - 1 ) sleep( 3 );
+        }
+
+        $grand = $total_articles + $tool_count_run;
+        $message = "Run complete: {$published}/{$grand} articles published ({$tool_published} tool tutorials). Trending fetched: {$trending_added} topics.";
     }
 
     if ( 'fetch' === $action ) {
@@ -253,6 +280,52 @@ if ( isset( $_GET['action'] ) ) {
         }
     }
 
+    // Add tool keyword(s).
+    if ( 'add-tool-keyword' === $action && isset( $_POST['tool_keywords'] ) && isset( $_POST['tk_category'] ) && isset( $_POST['tk_difficulty'] ) ) {
+        $raw     = trim( $_POST['tool_keywords'] );
+        $cat     = sanitize_slug( $_POST['tk_category'] );
+        $diff    = sanitize_slug( $_POST['tk_difficulty'] );
+        $valid_cats  = array_keys( $categories );
+        $valid_diffs = array( 'beginner', 'intermediate', 'advanced' );
+
+        if ( $raw && in_array( $cat, $valid_cats, true ) && in_array( $diff, $valid_diffs, true ) ) {
+            $lines = array_filter( array_map( 'trim', preg_split( '/[\r\n]+/', $raw ) ) );
+            $added = 0;
+            foreach ( $lines as $line ) {
+                // Format: "keyword | tool_name"  (tool_name optional)
+                $parts     = array_map( 'trim', explode( '|', $line, 2 ) );
+                $kw        = $parts[0];
+                $tool_name = isset( $parts[1] ) ? $parts[1] : '';
+                if ( strlen( $kw ) >= 5 && strlen( $kw ) <= 500 ) {
+                    if ( QWE_DB::add_tool_keyword( $kw, $tool_name, $cat, $diff ) ) {
+                        $added++;
+                    }
+                }
+            }
+            $message = "Added {$added} tool keyword(s) to '{$cat}' ({$diff}).";
+        } else {
+            $message = 'Invalid input. Please check category, difficulty, and keywords.';
+        }
+    }
+
+    // Delete tool keyword.
+    if ( 'delete-tool-keyword' === $action && isset( $_GET['tk_id'] ) ) {
+        $tk_id = (int) $_GET['tk_id'];
+        if ( QWE_DB::delete_tool_keyword( $tk_id ) ) {
+            $message = "Tool keyword #{$tk_id} deleted.";
+        } else {
+            $message = "Could not delete tool keyword #{$tk_id} (may already be used).";
+        }
+    }
+
+    // Save tools settings.
+    if ( 'save-tools-settings' === $action && isset( $_POST['tools_per_run'] ) ) {
+        $enabled = ! empty( $_POST['tools_enabled'] );
+        $per_run = max( 0, (int) $_POST['tools_per_run'] );
+        QWE_DB::save_tools_settings( $enabled, $per_run );
+        $message = "Tools settings saved: " . ( $enabled ? 'enabled' : 'disabled' ) . ", {$per_run} per run.";
+    }
+
     // Save provider settings.
     if ( 'save-settings' === $action && isset( $_POST['provider'] ) ) {
         $new_provider   = ( 'openai' === $_POST['provider'] ) ? 'openai' : 'claude';
@@ -371,6 +444,23 @@ if ( 'keywords' === $view ) {
     $kw_list  = QWE_DB::get_keywords( $kw_filter_status, $kw_filter_cat, $kw_per_page, $kw_offset );
     $kw_total = QWE_DB::count_keywords( $kw_filter_status, $kw_filter_cat );
     $kw_pages = max( 1, ceil( $kw_total / $kw_per_page ) );
+}
+
+// Tool keyword management data (only load when needed).
+$tk_list = array();
+$tk_total = 0;
+if ( 'tools' === $view ) {
+    $valid_tk_statuses = array( 'all', 'pending', 'used' );
+    $tk_filter_status = isset( $_GET['tk_status'] ) && in_array( $_GET['tk_status'], $valid_tk_statuses, true ) ? $_GET['tk_status'] : 'pending';
+    $valid_tk_cats = array_merge( array( 'all' ), array_keys( $categories ) );
+    $tk_filter_cat = isset( $_GET['tk_cat'] ) && in_array( $_GET['tk_cat'], $valid_tk_cats, true ) ? $_GET['tk_cat'] : 'all';
+    $tk_page     = max( 1, isset( $_GET['tk_page'] ) ? (int) $_GET['tk_page'] : 1 );
+    $tk_per_page = 50;
+    $tk_offset   = ( $tk_page - 1 ) * $tk_per_page;
+
+    $tk_list  = QWE_DB::get_tool_keywords( $tk_filter_status, $tk_filter_cat, $tk_per_page, $tk_offset );
+    $tk_total = QWE_DB::count_tool_keywords( $tk_filter_status, $tk_filter_cat );
+    $tk_pages = max( 1, ceil( $tk_total / $tk_per_page ) );
 }
 
 // Pagination settings.
@@ -547,6 +637,7 @@ if ( 'log' === $view && file_exists( $log_file ) ) {
         .badge-used { background: #FEE2E2; color: #DC2626; }
         .badge-pending { background: #D1FAE5; color: #065F46; }
         .badge-manual { background: #E0E7FF; color: #3730A3; }
+        .badge-tool { background: #EDE9FE; color: #7C3AED; }
         .generate-note { background: #EFF6FF; border: 1px solid #BFDBFE; color: #1E40AF; padding: 10px 14px; border-radius: 8px; margin-top: 12px; font-size: 13px; }
         .generate-progress { text-align: center; padding: 40px 20px; }
         .spinner { width: 40px; height: 40px; border: 4px solid #e5e7eb; border-top-color: #4F46E5; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 20px; }
@@ -571,6 +662,7 @@ if ( 'log' === $view && file_exists( $log_file ) ) {
         <div class="tabs">
             <a href="<?php echo $base_url; ?>" class="tab <?php echo 'dashboard' === $view ? 'active' : ''; ?>">Dashboard</a>
             <a href="<?php echo $base_url; ?>&view=keywords" class="tab <?php echo 'keywords' === $view ? 'active' : ''; ?>">Keywords (<?php echo $stats['pending_keywords']; ?>)</a>
+            <a href="<?php echo $base_url; ?>&view=tools" class="tab <?php echo 'tools' === $view ? 'active' : ''; ?>">Tools (<?php echo $stats['pending_tool_keywords']; ?>)</a>
             <a href="<?php echo $base_url; ?>&view=trending" class="tab <?php echo 'trending' === $view ? 'active' : ''; ?>">Trending</a>
             <a href="<?php echo $base_url; ?>&view=generate" class="tab <?php echo 'generate' === $view ? 'active' : ''; ?>">Generate</a>
             <a href="<?php echo $base_url; ?>&view=settings" class="tab <?php echo 'settings' === $view ? 'active' : ''; ?>">Settings</a>
@@ -607,6 +699,10 @@ if ( 'log' === $view && file_exists( $log_file ) ) {
             <div class="stat-card">
                 <div class="number" style="color:#3730A3"><?php echo $stats['manual_articles']; ?></div>
                 <div class="label">Manual Articles</div>
+            </div>
+            <div class="stat-card">
+                <div class="number" style="color:#7C3AED"><?php echo $stats['tool_articles']; ?></div>
+                <div class="label">Tool Articles</div>
             </div>
             <div class="stat-card">
                 <div class="number" style="color:#10B981"><?php echo $stats['pending_keywords']; ?></div>
@@ -797,6 +893,121 @@ if ( 'log' === $view && file_exists( $log_file ) ) {
         </div>
 
         <?php endif; // end keywords view ?>
+
+
+        <?php if ( 'tools' === $view ) : ?>
+        <!-- ===================== TOOLS VIEW ===================== -->
+
+        <?php $tools_ps = QWE_DB::get_provider_settings(); ?>
+
+        <!-- Tools cron settings -->
+        <div class="section">
+            <h2>Tool Tutorials Scheduler</h2>
+            <p class="info-text" style="margin-bottom:12px">Each cron run generates this many tool tutorial articles (in addition to longtail + trending). Set to 0 to pause.</p>
+            <form method="POST" action="<?php echo $base_url; ?>&action=save-tools-settings&view=tools">
+                <div class="form-row">
+                    <label>Enabled</label>
+                    <label style="padding-top:8px"><input type="checkbox" name="tools_enabled" value="1" <?php echo ! empty( $tools_ps['tools_enabled'] ) ? 'checked' : ''; ?>> Generate tool tutorials on cron</label>
+                </div>
+                <div class="form-row">
+                    <label>Per Run</label>
+                    <input type="number" name="tools_per_run" min="0" max="20" value="<?php echo (int) ( $tools_ps['tools_per_run'] ?? 1 ); ?>" style="width:100px;">
+                    <span class="info-text" style="padding-top:8px">articles per cron execution</span>
+                </div>
+                <div class="form-row">
+                    <label></label>
+                    <button type="submit" class="btn btn-primary">Save Scheduler</button>
+                </div>
+            </form>
+        </div>
+
+        <!-- Add Tool Keywords (Batch) -->
+        <div class="section">
+            <h2>Add Tool Keywords</h2>
+            <form method="POST" action="<?php echo $base_url; ?>&action=add-tool-keyword&view=tools">
+                <div class="form-row">
+                    <label>Category</label>
+                    <select name="tk_category">
+                        <?php foreach ( $categories as $slug => $name ) : ?>
+                        <option value="<?php echo $slug; ?>"><?php echo htmlspecialchars( $name ); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label>Difficulty</label>
+                    <select name="tk_difficulty">
+                        <option value="beginner">Beginner</option>
+                        <option value="intermediate" selected>Intermediate</option>
+                        <option value="advanced">Advanced</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label>Keywords</label>
+                    <textarea name="tool_keywords" placeholder="One per line. Format: keyword | tool name (tool name optional, but improves output)&#10;Example:&#10;OpenClaw deployment Docker tutorial 2026 | OpenClaw&#10;How to install Ollama on Ubuntu server | Ollama&#10;n8n self-hosted setup guide | n8n"></textarea>
+                </div>
+                <div class="form-row">
+                    <label></label>
+                    <button type="submit" class="btn btn-primary">Add Tool Keywords</button>
+                    <span class="info-text" style="padding-top:8px">Optional "| tool name" tells the generator to focus on that specific tool.</span>
+                </div>
+            </form>
+        </div>
+
+        <!-- Tool Keyword List -->
+        <div class="section">
+            <h2>All Tool Keywords (<?php echo $tk_total; ?> total)</h2>
+            <form class="filter-bar" method="GET">
+                <input type="hidden" name="key" value="<?php echo $secret; ?>">
+                <input type="hidden" name="view" value="tools">
+                <select name="tk_status">
+                    <option value="all" <?php echo 'all' === $tk_filter_status ? 'selected' : ''; ?>>All Status</option>
+                    <option value="pending" <?php echo 'pending' === $tk_filter_status ? 'selected' : ''; ?>>Pending</option>
+                    <option value="used" <?php echo 'used' === $tk_filter_status ? 'selected' : ''; ?>>Used</option>
+                </select>
+                <select name="tk_cat">
+                    <option value="all" <?php echo 'all' === $tk_filter_cat ? 'selected' : ''; ?>>All Categories</option>
+                    <?php foreach ( $categories as $slug => $name ) : ?>
+                    <option value="<?php echo $slug; ?>" <?php echo $slug === $tk_filter_cat ? 'selected' : ''; ?>><?php echo htmlspecialchars( $name ); ?></option>
+                    <?php endforeach; ?>
+                </select>
+                <button type="submit" class="btn btn-secondary">Filter</button>
+            </form>
+
+            <?php if ( empty( $tk_list ) ) : ?>
+                <p class="info-text">No tool keywords found with current filters.</p>
+            <?php else : ?>
+            <table>
+                <tr><th>ID</th><th>Keyword</th><th>Tool</th><th>Category</th><th>Difficulty</th><th>Status</th><th>Post ID</th><th>Action</th></tr>
+                <?php foreach ( $tk_list as $tk ) : ?>
+                <tr>
+                    <td><?php echo (int) $tk['id']; ?></td>
+                    <td><?php echo htmlspecialchars( $tk['keyword'] ); ?></td>
+                    <td><?php echo htmlspecialchars( $tk['tool_name'] ?: '-' ); ?></td>
+                    <td><?php echo htmlspecialchars( isset( $categories[ $tk['category'] ] ) ? $categories[ $tk['category'] ] : $tk['category'] ); ?></td>
+                    <td><span class="badge badge-<?php echo safe_css_class( $tk['difficulty'] ); ?>"><?php echo htmlspecialchars( $tk['difficulty'] ); ?></span></td>
+                    <td>
+                        <?php if ( 'used' === $tk['status'] ) : ?>
+                            <span class="badge badge-used">used</span>
+                        <?php else : ?>
+                            <span class="badge badge-pending">pending</span>
+                        <?php endif; ?>
+                    </td>
+                    <td><?php echo $tk['post_id'] ? (int) $tk['post_id'] : '-'; ?></td>
+                    <td>
+                        <?php if ( 'pending' === $tk['status'] ) : ?>
+                        <a href="<?php echo $base_url; ?>&action=delete-tool-keyword&tk_id=<?php echo (int) $tk['id']; ?>&view=tools&tk_status=<?php echo $tk_filter_status; ?>&tk_cat=<?php echo $tk_filter_cat; ?>&tk_page=<?php echo $tk_page; ?>" class="btn btn-danger btn-xs" onclick="return confirm('Delete this tool keyword?')">Delete</a>
+                        <?php else : ?>
+                        <span class="info-text">-</span>
+                        <?php endif; ?>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+            </table>
+            <?php render_pagination( $tk_page, $tk_pages, $tk_total, 'tk_page', $base_url, array( 'view' => 'tools', 'tk_status' => $tk_filter_status, 'tk_cat' => $tk_filter_cat ) ); ?>
+            <?php endif; ?>
+        </div>
+
+        <?php endif; // end tools view ?>
 
 
         <?php if ( 'trending' === $view ) : ?>

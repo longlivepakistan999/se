@@ -88,7 +88,15 @@ if ( QWE_TRENDING_ENABLED ) {
     $longtail_count = $total_articles - $trending_count;
 }
 
-log_msg( "Plan: {$longtail_count} longtail + {$trending_count} trending = {$total_articles} articles" );
+// Tool tutorial count from runtime settings (separate from QWE_ARTICLES_PER_RUN).
+$tool_count    = 0;
+$runtime_ps    = QWE_DB::get_provider_settings();
+if ( ! empty( $runtime_ps['tools_enabled'] ) ) {
+    $tool_count = max( 0, (int) ( $runtime_ps['tools_per_run'] ?? 0 ) );
+}
+$grand_total   = $total_articles + $tool_count;
+
+log_msg( "Plan: {$longtail_count} longtail + {$trending_count} trending + {$tool_count} tool = {$grand_total} articles" );
 
 $published = 0;
 
@@ -115,14 +123,25 @@ for ( $i = 0; $i < $trending_count; $i++ ) {
     }
 }
 
-log_msg( "=== Run Complete: {$published}/{$total_articles} articles published ===" );
+// Step 5: Generate and publish tool deployment tutorials.
+for ( $i = 0; $i < $tool_count; $i++ ) {
+    $result = generate_tool_article();
+    if ( $result ) {
+        $published++;
+    }
+    if ( $i < $tool_count - 1 ) {
+        sleep( 5 );
+    }
+}
+
+log_msg( "=== Run Complete: {$published}/{$grand_total} articles published ===" );
 
 if ( ! $is_cli ) {
     header( 'Content-Type: application/json' );
     echo json_encode( array(
         'success'   => true,
         'published' => $published,
-        'planned'   => $total_articles,
+        'planned'   => $grand_total,
     ) );
 }
 
@@ -254,6 +273,62 @@ function generate_trending_article() {
 /**
  * Show statistics.
  */
+/**
+ * Generate and publish one tool deployment tutorial article.
+ */
+function generate_tool_article() {
+    $tool_data = QWE_DB::get_next_tool_keyword();
+
+    if ( ! $tool_data ) {
+        log_msg( 'No pending tool keywords available' );
+        return false;
+    }
+
+    if ( QWE_DB::keyword_already_used( $tool_data['keyword'] ) ) {
+        log_msg( "Tool keyword already published: \"{$tool_data['keyword']}\", skipping" );
+        QWE_DB::mark_tool_keyword_used( $tool_data['id'], 0 );
+        return false;
+    }
+
+    log_msg( "Generating tool: \"{$tool_data['keyword']}\" [tool: {$tool_data['tool_name']}]" );
+
+    $article = QWE_Generator::generate(
+        $tool_data['keyword'],
+        'tool',
+        $tool_data['category'],
+        $tool_data['difficulty'],
+        null,
+        $tool_data['tool_name'] ?? ''
+    );
+
+    if ( ! $article ) {
+        log_msg( 'Tool article generation failed, skipping' );
+        return false;
+    }
+
+    $post_id = QWE_Publisher::publish( $article );
+
+    if ( ! $post_id ) {
+        log_msg( 'Publishing failed, skipping' );
+        return false;
+    }
+
+    QWE_DB::mark_tool_keyword_used( $tool_data['id'], $post_id );
+
+    QWE_DB::log_article(
+        $post_id,
+        $article['title'],
+        $tool_data['keyword'],
+        'tool',
+        $article['category'],
+        $article['difficulty'],
+        $tool_data['id']
+    );
+
+    log_msg( "Published tool [{$post_id}]: {$article['title']}" );
+    return true;
+}
+
 function show_stats() {
     $stats = QWE_DB::get_stats();
 

@@ -25,7 +25,7 @@ class QWE_Generator {
      * @param string $difficulty    'beginner', 'intermediate', or 'advanced'.
      * @return array|false          Article data or false on failure.
      */
-    public static function generate( $keyword, $keyword_type = 'longtail', $hint_category = '', $difficulty = 'beginner', $provider = null ) {
+    public static function generate( $keyword, $keyword_type = 'longtail', $hint_category = '', $difficulty = 'beginner', $provider = null, $tool_name = '' ) {
         // Resolve provider early so prompts can be tailored.
         if ( null === $provider ) {
             $ps = QWE_DB::get_provider_settings();
@@ -40,7 +40,7 @@ class QWE_Generator {
         }
 
         $system_prompt = self::build_system_prompt( $provider );
-        $user_prompt = self::build_user_prompt( $keyword, $keyword_type, $hint_category, $difficulty, $category_list );
+        $user_prompt = self::build_user_prompt( $keyword, $keyword_type, $hint_category, $difficulty, $category_list, $tool_name );
 
         // Pass 1: Generate article with web search enabled (if configured).
         $response = self::call_api( $system_prompt, $user_prompt, true, $provider );
@@ -449,7 +449,7 @@ PROMPT;
     /**
      * Build the user prompt.
      */
-    private static function build_user_prompt( $keyword, $keyword_type, $hint_category, $difficulty, $category_list ) {
+    private static function build_user_prompt( $keyword, $keyword_type, $hint_category, $difficulty, $category_list, $tool_name = '' ) {
         $type_context = '';
         if ( 'trending' === $keyword_type ) {
             $type_context = <<<'TCTX'
@@ -457,6 +457,17 @@ PROMPT;
 CONTEXT: This is a TRENDING/HOT topic right now. Write it as a timely piece — mention that this just dropped or is blowing up, reference community reactions, but still make it a hands-on tutorial people can follow. Don't write a news article; write a "here's what this means for you and how to actually use it" post.
 
 TCTX;
+        } elseif ( 'tool' === $keyword_type ) {
+            $tool_label = $tool_name ? $tool_name : $keyword;
+            $type_context = "\nCONTEXT: This is a TOOL DEPLOYMENT/INSTALLATION tutorial for \"{$tool_label}\". Focus on hands-on setup:\n"
+                . "- System requirements (OS, dependencies, hardware specs)\n"
+                . "- Official download source / GitHub repo / package manager URL (include real working URLs)\n"
+                . "- Step-by-step installation commands (copy-pasteable, with exact syntax)\n"
+                . "- First-time configuration (minimum viable config to get it running)\n"
+                . "- Verification step (how to confirm the install worked)\n"
+                . "- Common install errors and fixes (real error messages from community reports)\n"
+                . "- Upgrade / uninstall procedure\n"
+                . "Readers want to actually DEPLOY this tool. Prioritize commands, paths, and URLs over conceptual explanations. If multiple install methods exist (Docker, binary, source), pick the recommended one and briefly mention alternatives.\n";
         }
 
         $category_hint = '';
@@ -485,6 +496,11 @@ TCTX;
             'STRUCTURE: Reader scenario → Tool/concept overview → Practical setup guide → Advanced usage → Honest limitations → FAQ',
         );
         $structure = $structures[ array_rand( $structures ) ];
+
+        // Tool tutorials get a fixed deployment-focused structure.
+        if ( 'tool' === $keyword_type ) {
+            $structure = 'STRUCTURE: Brief intro (what it is, why deploy it) → System requirements → Download / source → Install (step-by-step commands) → First-time configuration → Verify it works → Common errors & fixes → Upgrade / uninstall → FAQ';
+        }
 
         // Randomize tone emphasis (adds subtle article-to-article personality shift).
         $tones = array(

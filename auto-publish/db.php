@@ -78,12 +78,28 @@ class QWE_DB {
             )
         " );
 
+        $pdo->exec( "
+            CREATE TABLE IF NOT EXISTS tool_keywords (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                keyword     TEXT NOT NULL UNIQUE,
+                tool_name   TEXT,
+                category    TEXT NOT NULL,
+                difficulty  TEXT NOT NULL DEFAULT 'intermediate',
+                status      TEXT NOT NULL DEFAULT 'pending',
+                used_date   TEXT,
+                post_id     INTEGER,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        " );
+
         $pdo->exec( "CREATE INDEX IF NOT EXISTS idx_keywords_status ON keywords(status)" );
         $pdo->exec( "CREATE INDEX IF NOT EXISTS idx_keywords_category ON keywords(category)" );
         $pdo->exec( "CREATE INDEX IF NOT EXISTS idx_trending_status ON trending(status)" );
         $pdo->exec( "CREATE UNIQUE INDEX IF NOT EXISTS idx_trending_title ON trending(title)" );
         $pdo->exec( "CREATE INDEX IF NOT EXISTS idx_articles_keyword_type ON articles(keyword_type)" );
         $pdo->exec( "CREATE INDEX IF NOT EXISTS idx_articles_category ON articles(category)" );
+        $pdo->exec( "CREATE INDEX IF NOT EXISTS idx_tool_keywords_status ON tool_keywords(status)" );
+        $pdo->exec( "CREATE INDEX IF NOT EXISTS idx_tool_keywords_category ON tool_keywords(category)" );
     }
 
     // ==========================================================
@@ -304,9 +320,11 @@ class QWE_DB {
         $longtail = $pdo->query( "SELECT COUNT(*) FROM articles WHERE keyword_type = 'longtail'" )->fetchColumn();
         $trending = $pdo->query( "SELECT COUNT(*) FROM articles WHERE keyword_type = 'trending'" )->fetchColumn();
         $manual = $pdo->query( "SELECT COUNT(*) FROM articles WHERE keyword_type = 'manual'" )->fetchColumn();
+        $tool = $pdo->query( "SELECT COUNT(*) FROM articles WHERE keyword_type = 'tool'" )->fetchColumn();
         $today = $pdo->query( "SELECT COUNT(*) FROM articles WHERE DATE(created_at) = DATE('now')" )->fetchColumn();
         $pending_kw = $pdo->query( "SELECT COUNT(*) FROM keywords WHERE status = 'pending'" )->fetchColumn();
         $pending_tr = $pdo->query( "SELECT COUNT(*) FROM trending WHERE status = 'pending'" )->fetchColumn();
+        $pending_tool = (int) $pdo->query( "SELECT COUNT(*) FROM tool_keywords WHERE status = 'pending'" )->fetchColumn();
 
         $by_category = $pdo->query(
             "SELECT category, COUNT(*) as count FROM articles GROUP BY category ORDER BY count DESC"
@@ -317,9 +335,11 @@ class QWE_DB {
             'longtail_articles'  => $longtail,
             'trending_articles'  => $trending,
             'manual_articles'    => $manual,
+            'tool_articles'      => $tool,
             'today_articles'     => $today,
             'pending_keywords'   => $pending_kw,
             'pending_trending'   => $pending_tr,
+            'pending_tool_keywords' => $pending_tool,
             'by_category'        => $by_category,
         );
     }
@@ -332,6 +352,83 @@ class QWE_DB {
         $stmt = $pdo->prepare( "SELECT id FROM articles WHERE LOWER(keyword) = LOWER(?)" );
         $stmt->execute( array( $keyword ) );
         return (bool) $stmt->fetch();
+    }
+
+    // ==========================================================
+    // Tool Keywords (for tool deployment/installation tutorials)
+    // ==========================================================
+
+    public static function add_tool_keyword( $keyword, $tool_name, $category, $difficulty = 'intermediate' ) {
+        $pdo  = self::connect();
+        $stmt = $pdo->prepare(
+            "INSERT OR IGNORE INTO tool_keywords (keyword, tool_name, category, difficulty) VALUES (?, ?, ?, ?)"
+        );
+        $stmt->execute( array( $keyword, $tool_name, $category, $difficulty ) );
+        return $stmt->rowCount() > 0;
+    }
+
+    public static function get_next_tool_keyword( $category = null ) {
+        $pdo = self::connect();
+        if ( $category ) {
+            $stmt = $pdo->prepare(
+                "SELECT * FROM tool_keywords WHERE status = 'pending' AND category = ? ORDER BY RANDOM() LIMIT 1"
+            );
+            $stmt->execute( array( $category ) );
+        } else {
+            $stmt = $pdo->query(
+                "SELECT * FROM tool_keywords WHERE status = 'pending' ORDER BY RANDOM() LIMIT 1"
+            );
+        }
+        return $stmt->fetch( PDO::FETCH_ASSOC );
+    }
+
+    public static function mark_tool_keyword_used( $id, $post_id ) {
+        $pdo  = self::connect();
+        $stmt = $pdo->prepare(
+            "UPDATE tool_keywords SET status = 'used', used_date = datetime('now'), post_id = ? WHERE id = ?"
+        );
+        return $stmt->execute( array( $post_id, $id ) );
+    }
+
+    public static function delete_tool_keyword( $id ) {
+        $pdo  = self::connect();
+        $stmt = $pdo->prepare( "DELETE FROM tool_keywords WHERE id = ? AND status = 'pending'" );
+        $stmt->execute( array( $id ) );
+        return $stmt->rowCount() > 0;
+    }
+
+    public static function get_tool_keywords( $status = 'all', $category = 'all', $limit = 50, $offset = 0 ) {
+        $pdo    = self::connect();
+        $where  = array();
+        $params = array();
+        if ( 'all' !== $status )   { $where[] = 'status = ?';   $params[] = $status; }
+        if ( 'all' !== $category ) { $where[] = 'category = ?'; $params[] = $category; }
+        $sql = 'SELECT * FROM tool_keywords';
+        if ( ! empty( $where ) ) $sql .= ' WHERE ' . implode( ' AND ', $where );
+        $sql .= ' ORDER BY category ASC, keyword ASC LIMIT ? OFFSET ?';
+        $params[] = $limit;
+        $params[] = $offset;
+        $stmt = $pdo->prepare( $sql );
+        $stmt->execute( $params );
+        return $stmt->fetchAll( PDO::FETCH_ASSOC );
+    }
+
+    public static function count_tool_keywords( $status = 'all', $category = 'all' ) {
+        $pdo    = self::connect();
+        $where  = array();
+        $params = array();
+        if ( 'all' !== $status )   { $where[] = 'status = ?';   $params[] = $status; }
+        if ( 'all' !== $category ) { $where[] = 'category = ?'; $params[] = $category; }
+        $sql = 'SELECT COUNT(*) FROM tool_keywords';
+        if ( ! empty( $where ) ) $sql .= ' WHERE ' . implode( ' AND ', $where );
+        $stmt = $pdo->prepare( $sql );
+        $stmt->execute( $params );
+        return (int) $stmt->fetchColumn();
+    }
+
+    public static function count_pending_tool_keywords() {
+        $pdo = self::connect();
+        return (int) $pdo->query( "SELECT COUNT(*) FROM tool_keywords WHERE status = 'pending'" )->fetchColumn();
     }
 
     // ==========================================================
@@ -356,6 +453,8 @@ class QWE_DB {
             'provider'       => defined( 'QWE_AI_PROVIDER' ) ? QWE_AI_PROVIDER : 'claude',
             'openai_api_key' => defined( 'QWE_OPENAI_API_KEY' ) ? QWE_OPENAI_API_KEY : '',
             'openai_model'   => defined( 'QWE_OPENAI_MODEL' ) ? QWE_OPENAI_MODEL : 'gpt-5',
+            'tools_enabled'  => false,
+            'tools_per_run'  => 1,
         );
 
         $file = self::settings_file();
@@ -371,14 +470,29 @@ class QWE_DB {
 
     /**
      * Save provider settings.
+     *
+     * Merges given values with existing settings so callers can update
+     * a subset without wiping out other fields.
      */
-    public static function save_provider_settings( $provider, $openai_api_key, $openai_model ) {
-        $data = array(
+    public static function save_provider_settings( $provider, $openai_api_key, $openai_model, $extra = array() ) {
+        $current = self::get_provider_settings();
+        $data = array_merge( $current, array(
             'provider'       => $provider,
             'openai_api_key' => $openai_api_key,
             'openai_model'   => $openai_model,
-        );
+        ), $extra );
         $file = self::settings_file();
         return file_put_contents( $file, json_encode( $data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT ) );
+    }
+
+    /**
+     * Save only tools-related settings (preserves provider config).
+     */
+    public static function save_tools_settings( $enabled, $per_run ) {
+        $current = self::get_provider_settings();
+        $current['tools_enabled'] = (bool) $enabled;
+        $current['tools_per_run'] = max( 0, (int) $per_run );
+        $file = self::settings_file();
+        return file_put_contents( $file, json_encode( $current, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT ) );
     }
 }
