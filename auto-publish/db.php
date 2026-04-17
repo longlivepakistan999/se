@@ -431,6 +431,16 @@ class QWE_DB {
         return (int) $pdo->query( "SELECT COUNT(*) FROM tool_keywords WHERE status = 'pending'" )->fetchColumn();
     }
 
+    /**
+     * Count tool articles published today (for daily quota).
+     */
+    public static function count_tool_articles_today() {
+        $pdo = self::connect();
+        return (int) $pdo->query(
+            "SELECT COUNT(*) FROM articles WHERE keyword_type = 'tool' AND DATE(created_at) = DATE('now')"
+        )->fetchColumn();
+    }
+
     // ==========================================================
     // Provider Settings (JSON file storage)
     // ==========================================================
@@ -455,6 +465,7 @@ class QWE_DB {
             'openai_model'   => defined( 'QWE_OPENAI_MODEL' ) ? QWE_OPENAI_MODEL : 'gpt-5',
             'tools_enabled'  => false,
             'tools_per_run'  => 1,
+            'tools_per_day'  => 2,
         );
 
         $file = self::settings_file();
@@ -488,10 +499,13 @@ class QWE_DB {
     /**
      * Save only tools-related settings (preserves provider config).
      */
-    public static function save_tools_settings( $enabled, $per_run ) {
+    public static function save_tools_settings( $enabled, $per_run, $per_day = null ) {
         $current = self::get_provider_settings();
         $current['tools_enabled'] = (bool) $enabled;
         $current['tools_per_run'] = max( 0, (int) $per_run );
+        if ( null !== $per_day ) {
+            $current['tools_per_day'] = max( 0, (int) $per_day );
+        }
         $file = self::settings_file();
         return file_put_contents( $file, json_encode( $current, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT ) );
     }

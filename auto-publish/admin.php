@@ -119,9 +119,14 @@ if ( isset( $_GET['action'] ) ) {
             if ( $i < $trending_count - 1 ) sleep( 3 );
         }
 
-        // Tool tutorials (if enabled in settings).
+        // Tool tutorials (if enabled in settings) with daily quota.
         $tool_ps_run = QWE_DB::get_provider_settings();
         $tool_count_run = ! empty( $tool_ps_run['tools_enabled'] ) ? max( 0, (int) ( $tool_ps_run['tools_per_run'] ?? 0 ) ) : 0;
+        $tool_per_day_run = (int) ( $tool_ps_run['tools_per_day'] ?? 0 );
+        if ( $tool_per_day_run > 0 ) {
+            $today_tool_count = QWE_DB::count_tool_articles_today();
+            $tool_count_run = min( $tool_count_run, max( 0, $tool_per_day_run - $today_tool_count ) );
+        }
         $tool_published = 0;
         for ( $i = 0; $i < $tool_count_run; $i++ ) {
             $tk = QWE_DB::get_next_tool_keyword();
@@ -322,8 +327,10 @@ if ( isset( $_GET['action'] ) ) {
     if ( 'save-tools-settings' === $action && isset( $_POST['tools_per_run'] ) ) {
         $enabled = ! empty( $_POST['tools_enabled'] );
         $per_run = max( 0, (int) $_POST['tools_per_run'] );
-        QWE_DB::save_tools_settings( $enabled, $per_run );
-        $message = "Tools settings saved: " . ( $enabled ? 'enabled' : 'disabled' ) . ", {$per_run} per run.";
+        $per_day = isset( $_POST['tools_per_day'] ) ? max( 0, (int) $_POST['tools_per_day'] ) : null;
+        QWE_DB::save_tools_settings( $enabled, $per_run, $per_day );
+        $day_label = $per_day !== null ? " ({$per_day}/day max)" : '';
+        $message = "Tools settings saved: " . ( $enabled ? 'enabled' : 'disabled' ) . ", {$per_run} per run{$day_label}.";
     }
 
     // Save provider settings.
@@ -903,7 +910,7 @@ if ( 'log' === $view && file_exists( $log_file ) ) {
         <!-- Tools cron settings -->
         <div class="section">
             <h2>Tool Tutorials Scheduler</h2>
-            <p class="info-text" style="margin-bottom:12px">Each cron run generates this many tool tutorial articles (in addition to longtail + trending). Set to 0 to pause.</p>
+            <p class="info-text" style="margin-bottom:12px">Tool articles run in addition to longtail + trending. <strong>Per Day</strong> caps total daily output regardless of how many times cron runs. <strong>Per Run</strong> caps each execution. Today so far: <strong><?php echo QWE_DB::count_tool_articles_today(); ?></strong> tool article(s).</p>
             <form method="POST" action="<?php echo $base_url; ?>&action=save-tools-settings&view=tools">
                 <div class="form-row">
                     <label>Enabled</label>
@@ -913,6 +920,11 @@ if ( 'log' === $view && file_exists( $log_file ) ) {
                     <label>Per Run</label>
                     <input type="number" name="tools_per_run" min="0" max="20" value="<?php echo (int) ( $tools_ps['tools_per_run'] ?? 1 ); ?>" style="width:100px;">
                     <span class="info-text" style="padding-top:8px">articles per cron execution</span>
+                </div>
+                <div class="form-row">
+                    <label>Per Day</label>
+                    <input type="number" name="tools_per_day" min="0" max="50" value="<?php echo (int) ( $tools_ps['tools_per_day'] ?? 2 ); ?>" style="width:100px;">
+                    <span class="info-text" style="padding-top:8px">max articles per day total (0 = no daily limit)</span>
                 </div>
                 <div class="form-row">
                     <label></label>

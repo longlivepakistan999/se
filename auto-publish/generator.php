@@ -130,6 +130,11 @@ class QWE_Generator {
             $article['category'] = $hint_category ?: 'chatgpt-llms';
         }
 
+        // For tool tutorials: force the user-selected category (no AI override).
+        if ( 'tool' === $keyword_type && $hint_category && isset( $categories[ $hint_category ] ) ) {
+            $article['category'] = $hint_category;
+        }
+
         // Validate difficulty.
         $valid_difficulties = array( 'beginner', 'intermediate', 'advanced' );
         if ( ! in_array( $article['difficulty'], $valid_difficulties, true ) ) {

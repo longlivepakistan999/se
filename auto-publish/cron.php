@@ -93,6 +93,17 @@ $tool_count    = 0;
 $runtime_ps    = QWE_DB::get_provider_settings();
 if ( ! empty( $runtime_ps['tools_enabled'] ) ) {
     $tool_count = max( 0, (int) ( $runtime_ps['tools_per_run'] ?? 0 ) );
+
+    // Apply daily quota: cap tool_count so today's total stays within tools_per_day.
+    $per_day = (int) ( $runtime_ps['tools_per_day'] ?? 0 );
+    if ( $per_day > 0 ) {
+        $today_count = QWE_DB::count_tool_articles_today();
+        $remaining   = max( 0, $per_day - $today_count );
+        if ( $remaining < $tool_count ) {
+            log_msg( "Tool daily quota: {$today_count}/{$per_day} today, capping run to {$remaining}" );
+            $tool_count = $remaining;
+        }
+    }
 }
 $grand_total   = $total_articles + $tool_count;
 
