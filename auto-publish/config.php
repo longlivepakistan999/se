@@ -116,6 +116,7 @@ define( 'QWE_CATEGORIES', serialize( array(
     'ai-writing'        => 'AI Writing',
     'ai-video-audio'    => 'AI Video & Audio',
     'ai-business'       => 'AI for Business',
+    'ai-tools'          => 'AI Tools',
 ) ) );
 
 // ============================================================
