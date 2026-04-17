@@ -124,3 +124,38 @@ define( 'QWE_CATEGORIES', serialize( array(
 // ============================================================
 
 define( 'QWE_CONTENT_LANGUAGE', 'English' );
+
+// ============================================================
+// Register ai-tool post type on every WordPress load.
+// This ensures archives and single pages work on the frontend.
+// ============================================================
+
+add_action( 'init', function() {
+    if ( post_type_exists( 'ai-tool' ) ) {
+        return;
+    }
+    register_post_type( 'ai-tool', array(
+        'labels' => array(
+            'name'          => 'AI Tools',
+            'singular_name' => 'AI Tool',
+        ),
+        'public'       => true,
+        'has_archive'  => true,
+        'rewrite'      => array( 'slug' => 'ai-tools' ),
+        'supports'     => array( 'title', 'editor', 'excerpt', 'author', 'thumbnail' ),
+        'show_in_rest' => true,
+    ) );
+
+    if ( ! taxonomy_exists( 'ai_tool_category' ) ) {
+        register_taxonomy( 'ai_tool_category', 'ai-tool', array(
+            'labels' => array(
+                'name'          => 'AI Tool Categories',
+                'singular_name' => 'AI Tool Category',
+            ),
+            'public'       => true,
+            'hierarchical' => true,
+            'rewrite'      => array( 'slug' => 'ai-tool-category' ),
+            'show_in_rest' => true,
+        ) );
+    }
+} );
