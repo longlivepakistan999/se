@@ -30,13 +30,8 @@ class QWE_Publisher {
 
         // Determine post type and taxonomy based on keyword_type.
         $is_tool   = ( 'tool' === ( $article['keyword_type'] ?? '' ) );
-        $post_type = $is_tool ? 'ai-tool'           : 'tutorial';
-        $taxonomy  = $is_tool ? 'ai_tool_category'   : 'tutorial_category';
-
-        // Register ai-tool post type if it doesn't exist yet.
-        if ( $is_tool ) {
-            self::register_tool_post_type();
-        }
+        $post_type = $is_tool ? QWE_TOOL_POST_TYPE : 'tutorial';
+        $taxonomy  = $is_tool ? QWE_TOOL_TAXONOMY   : 'tutorial_category';
 
         // Sanitize slug first so duplicate check matches what WP actually stores.
         $slug = sanitize_title( $article['slug'] );
@@ -106,40 +101,6 @@ class QWE_Publisher {
         self::log( "Published: [{$post_id}] {$article['title']} ({$article['keyword_type']}: {$article['keyword']}) [{$post_type}]" );
 
         return $post_id;
-    }
-
-    /**
-     * Register the ai-tool custom post type and taxonomy if not already registered.
-     */
-    private static function register_tool_post_type() {
-        if ( post_type_exists( 'ai-tool' ) ) {
-            return;
-        }
-
-        register_post_type( 'ai-tool', array(
-            'labels' => array(
-                'name'          => 'AI Tools',
-                'singular_name' => 'AI Tool',
-            ),
-            'public'       => true,
-            'has_archive'  => true,
-            'rewrite'      => array( 'slug' => 'ai-tools' ),
-            'supports'     => array( 'title', 'editor', 'excerpt', 'author', 'thumbnail' ),
-            'show_in_rest' => true,
-        ) );
-
-        if ( ! taxonomy_exists( 'ai_tool_category' ) ) {
-            register_taxonomy( 'ai_tool_category', 'ai-tool', array(
-                'labels' => array(
-                    'name'          => 'AI Tool Categories',
-                    'singular_name' => 'AI Tool Category',
-                ),
-                'public'       => true,
-                'hierarchical' => true,
-                'rewrite'      => array( 'slug' => 'ai-tool-category' ),
-                'show_in_rest' => true,
-            ) );
-        }
     }
 
     /**
