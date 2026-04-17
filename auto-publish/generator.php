@@ -464,15 +464,28 @@ CONTEXT: This is a TRENDING/HOT topic right now. Write it as a timely piece — 
 TCTX;
         } elseif ( 'tool' === $keyword_type ) {
             $tool_label = $tool_name ? $tool_name : $keyword;
-            $type_context = "\nCONTEXT: This is a TOOL DEPLOYMENT/INSTALLATION tutorial for \"{$tool_label}\". Focus on hands-on setup:\n"
-                . "- System requirements (OS, dependencies, hardware specs)\n"
-                . "- Official download source / GitHub repo / package manager URL (include real working URLs)\n"
-                . "- Step-by-step installation commands (copy-pasteable, with exact syntax)\n"
-                . "- First-time configuration (minimum viable config to get it running)\n"
-                . "- Verification step (how to confirm the install worked)\n"
-                . "- Common install errors and fixes (real error messages from community reports)\n"
-                . "- Upgrade / uninstall procedure\n"
-                . "Readers want to actually DEPLOY this tool. Prioritize commands, paths, and URLs over conceptual explanations. If multiple install methods exist (Docker, binary, source), pick the recommended one and briefly mention alternatives.\n";
+            $type_context = "\nCONTEXT: This is a TOOL DEPLOYMENT/INSTALLATION tutorial for \"{$tool_label}\".\n\n"
+                . "=== CRITICAL: SEARCH FOR LATEST VERSION FIRST ===\n"
+                . "Before writing ANYTHING, you MUST search for:\n"
+                . "1. \"{$tool_label} latest version\" or \"{$tool_label} releases github\" — find the CURRENT latest version number (e.g., v2.1.0)\n"
+                . "2. \"{$tool_label} official download\" or \"{$tool_label} installation guide\" — find the REAL download URL and official docs\n"
+                . "3. \"{$tool_label} changelog\" or \"{$tool_label} release notes\" — check what changed in the latest version\n"
+                . "4. \"{$tool_label} install issues\" or \"{$tool_label} docker setup problems\" — find common pitfalls\n"
+                . "Use the EXACT version number you find. Do NOT guess or use outdated versions from training data.\n"
+                . "Include the REAL GitHub URL, official website URL, or package registry URL.\n\n"
+                . "=== TUTORIAL CONTENT REQUIREMENTS ===\n"
+                . "- Latest version number: state it clearly in the title or intro (e.g., \"Install OpenClaw v2.1.0\")\n"
+                . "- System requirements: OS, CPU, RAM, disk, dependencies (with minimum AND recommended specs)\n"
+                . "- Official download source: GitHub releases URL, Docker Hub, pip/npm, or official website (real working URLs)\n"
+                . "- Step-by-step installation commands: copy-pasteable, with exact syntax for the LATEST version\n"
+                . "- First-time configuration: minimum viable config to get it running\n"
+                . "- Verification step: how to confirm the install works (version check command, health endpoint, test run)\n"
+                . "- Common install errors and fixes: real error messages from community reports (GitHub issues, Stack Overflow)\n"
+                . "- Upgrade from previous version: migration notes if applicable\n"
+                . "- Uninstall / cleanup procedure\n\n"
+                . "Readers want to actually DEPLOY this tool RIGHT NOW with the LATEST version. "
+                . "Prioritize commands, paths, and real URLs over conceptual explanations. "
+                . "If multiple install methods exist (Docker, binary, source, package manager), cover the recommended one in detail and briefly mention alternatives.\n";
         }
 
         $category_hint = '';
